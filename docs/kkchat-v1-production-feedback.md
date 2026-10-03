@@ -15,7 +15,7 @@
 
 | 仓库 | commit | PR |
 |---|---|---|
-| kkchat | `9b02843c15c6944d487674bc685e820eaf8d91ab` | https://github.com/yydsxwh/kkchat/pull/1 |
+| kkchat | `9b02843c15c6944d487674bc685e820eaf8d91ab`（报告在同分支后续提交） | https://github.com/yydsxwh/kkchat/pull/1 |
 | shared | `9802a510e3e9a7cd7416cac3191c73039e586b85` | https://github.com/yydsxwh/shared/pull/14 |
 | account | `cd908c1b034da47a9175a0fae9843b1b48e57542` | https://github.com/yydsxwh/account/pull/23 |
 | Andyyyds | `8edf7a93ef3727f50a64afe4235f86bf6d355d21` | https://github.com/yydsxwh/Andyyyds/pull/61 |
