@@ -1,0 +1,34 @@
+{
+  "name": "kkchat",
+  "version": "0.1.0",
+  "private": true,
+  "description": "KKChat：全生态统一即时沟通。身份只认账号中心 sub。",
+  "scripts": {
+    "dev": "next dev --hostname 0.0.0.0 --port 3210 --webpack",
+    "build": "prisma generate && next build --webpack",
+    "start": "next start --hostname 127.0.0.1 --port 3210",
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "test": "DATABASE_URL=postgresql://kkchat:kkchat@127.0.0.1:5432/kkchat node --import tsx --test \"test/**/*.test.ts\"",
+    "db:migrate": "prisma migrate deploy",
+    "postinstall": "prisma generate"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0",
+    "jose": "^6.2.8",
+    "next": "16.3.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.3.0",
+    "prisma": "^5.22.0",
+    "tsx": "^4.23.8",
+    "typescript": "^5"
+  }
+}

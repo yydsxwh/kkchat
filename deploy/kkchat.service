@@ -1,0 +1,22 @@
+[Unit]
+Description=KKChat
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kkchat
+Group=kkchat
+WorkingDirectory=/opt/kkchat/current
+EnvironmentFile=/etc/kkchat.env
+Environment=NODE_ENV=production
+Environment=PORT=3210
+Environment=HOSTNAME=127.0.0.1
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

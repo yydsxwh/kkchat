@@ -1,0 +1,21 @@
+{
+  "name": "KKChat",
+  "install": "npm install",
+  "repositoryDependencies": [
+    "github.com/yydsxwh/shared",
+    "github.com/yydsxwh/account",
+    "github.com/yydsxwh/Andyyyds",
+    "github.com/yydsxwh/academic",
+    "github.com/yydsxwh/platform"
+  ],
+  "terminals": [
+    {
+      "name": "web",
+      "command": "npm run dev",
+      "description": "启动 KKChat"
+    }
+  ],
+  "ports": [
+    { "name": "web", "port": 3210 }
+  ]
+}
