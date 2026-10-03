@@ -1,0 +1,117 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// 账号中心的最小公开投影。accountSub 才是跨产品身份。
+model UserProjection {
+  id               String   @id
+  accountSub       String   @unique
+  kkNumber         Int?
+  username         String?
+  displayName      String
+  avatarUrl        String   @default("")
+  publicRole       String?
+  profileUpdatedAt DateTime @default(now())
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  sessions BrowserSession[]
+  members  ConversationMember[]
+
+  @@index([kkNumber])
+  @@index([username])
+}
+
+/// HttpOnly 会话。撤销后 SSE 与接口一起失效。
+model BrowserSession {
+  id         String    @id
+  accountSub String
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+  user       UserProjection @relation(fields: [accountSub], references: [accountSub], onDelete: Cascade)
+
+  @@index([accountSub])
+  @@index([expiresAt])
+}
+
+model Conversation {
+  id                 String    @id
+  /// DIRECT | GROUP | CHANNEL
+  kind               String
+  /// DIRECT 唯一键。群和频道为空。PostgreSQL 允许多个 NULL。
+  directKey          String?   @unique
+  title              String    @default("")
+  avatarUrl          String    @default("")
+  createdBySub       String
+  sourceProduct      String    @default("kkchat")
+  businessType       String?
+  businessRefId      String?
+  lastMessageAt      DateTime?
+  lastMessagePreview String    @default("")
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  members  ConversationMember[]
+  messages Message[]
+
+  @@index([lastMessageAt])
+  @@index([sourceProduct, businessType, businessRefId])
+}
+
+model ConversationMember {
+  id             String    @id
+  conversationId String
+  accountSub     String
+  /// OWNER | ADMIN | MEMBER
+  role           String    @default("MEMBER")
+  /// ACTIVE | LEFT
+  joinStatus     String    @default("ACTIVE")
+  unreadCount    Int       @default(0)
+  lastReadAt     DateTime?
+  muted          Boolean   @default(false)
+  pinned         Boolean   @default(false)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  conversation Conversation   @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user         UserProjection @relation(fields: [accountSub], references: [accountSub], onDelete: Cascade)
+
+  @@unique([conversationId, accountSub])
+  @@index([accountSub, unreadCount])
+}
+
+model Message {
+  id             String    @id
+  conversationId String
+  senderSub      String
+  /// TEXT | SYSTEM | ACTION_CARD
+  type           String    @default("TEXT")
+  body           String    @default("")
+  metadataJson   String    @default("{}")
+  sourceProduct  String    @default("kkchat")
+  idempotencyKey String?
+  recalledAt     DateTime?
+  createdAt      DateTime  @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  reads        MessageRead[]
+
+  @@unique([conversationId, senderSub, idempotencyKey])
+  @@index([conversationId, createdAt])
+}
+
+model MessageRead {
+  id         String   @id
+  messageId  String
+  accountSub String
+  readAt     DateTime @default(now())
+  message    Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, accountSub])
+}
