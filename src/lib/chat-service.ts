@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   ChatError,
+  COURSE_GROUP_MEMBER_LIMIT,
   GROUP_MEMBER_LIMIT,
   INBOX_LIMIT,
   MESSAGE_PAGE_SIZE,
@@ -16,6 +17,8 @@ import {
   type UserDraft,
 } from "./domain";
 import type { RealtimeBus } from "./realtime";
+import { isConversationViewing } from "./viewing";
+import { shouldNotifyWechat, wechatCycleKey, wechatExcerpt } from "./wechat-policy";
 import {
   DuplicateRecordError,
   type ChatMessage,
@@ -155,6 +158,7 @@ export class ChatService {
       joinStatus: "ACTIVE",
       unreadCount: 0,
       lastReadAt: null,
+      lastExternalNotifiedAt: null,
       muted: false,
       pinned: false,
     }));
@@ -211,11 +215,102 @@ export class ChatService {
       joinStatus: "ACTIVE",
       unreadCount: 0,
       lastReadAt: null,
+      lastExternalNotifiedAt: null,
       muted: false,
       pinned: false,
     }));
     await this.store.insertConversation(conversation, members);
     return conversation;
+  }
+
+  /**
+   * 按产品业务键找到或创建课程群，并同步仍在课的成员。
+   * 退课的人标成 LEFT，之后的公告不再发给他们。
+   */
+  async ensureBusinessGroup(input: {
+    creatorSub: string;
+    title: string;
+    memberSubs: string[];
+    sourceProduct: string;
+    businessType: string;
+    businessRefId: string;
+    memberLimit?: number;
+    now?: Date;
+  }): Promise<Conversation> {
+    const creatorSub = assertUserPublicId(input.creatorSub);
+    const now = input.now || new Date();
+    const title = input.title.trim().slice(0, 80);
+    if (!title) throw new ChatError(400, "请填写群名称");
+    const businessType = input.businessType.trim();
+    const businessRefId = input.businessRefId.trim();
+    if (!businessType || !businessRefId) throw new ChatError(400, "缺少课程标识");
+    const limit = input.memberLimit ?? (businessType === "course-class" ? COURSE_GROUP_MEMBER_LIMIT : GROUP_MEMBER_LIMIT);
+    const unique = [...new Set([creatorSub, ...input.memberSubs.map((item) => assertUserPublicId(item))])];
+    if (unique.length > limit) throw new ChatError(400, "群成员过多");
+    await this.ensureRow(creatorSub, now);
+    for (const accountSub of unique) await this.ensureRow(accountSub, now);
+    const existing = await this.store.findBusiness(input.sourceProduct, businessType, businessRefId);
+    if (!existing) {
+      const conversation: Conversation = {
+        id: newId(),
+        kind: "GROUP",
+        directKey: null,
+        title,
+        avatarUrl: "",
+        createdBySub: creatorSub,
+        sourceProduct: input.sourceProduct || "kkchat",
+        businessType,
+        businessRefId,
+        lastMessageAt: null,
+        lastMessagePreview: "",
+        createdAt: now,
+        updatedAt: now,
+      };
+      const members: Member[] = unique.map((accountSub) => ({
+        id: newId(),
+        conversationId: conversation.id,
+        accountSub,
+        role: accountSub === creatorSub ? "OWNER" : "MEMBER",
+        joinStatus: "ACTIVE",
+        unreadCount: 0,
+        lastReadAt: null,
+        lastExternalNotifiedAt: null,
+        muted: false,
+        pinned: false,
+      }));
+      await this.store.insertConversation(conversation, members);
+      return conversation;
+    }
+    const current = await this.store.listMembers(existing.id);
+    const wanted = new Set(unique);
+    for (const member of current) {
+      const shouldStay = wanted.has(member.accountSub);
+      if (shouldStay && member.joinStatus !== "ACTIVE") {
+        member.joinStatus = "ACTIVE";
+        await this.store.saveMember(member);
+      }
+      if (!shouldStay && member.joinStatus === "ACTIVE") {
+        member.joinStatus = "LEFT";
+        await this.store.saveMember(member);
+      }
+    }
+    const known = new Set(current.map((item) => item.accountSub));
+    for (const accountSub of unique) {
+      if (known.has(accountSub)) continue;
+      await this.store.saveMember({
+        id: newId(),
+        conversationId: existing.id,
+        accountSub,
+        role: accountSub === creatorSub ? "OWNER" : "MEMBER",
+        joinStatus: "ACTIVE",
+        unreadCount: 0,
+        lastReadAt: null,
+        lastExternalNotifiedAt: null,
+        muted: false,
+        pinned: false,
+      });
+    }
+    return (await this.store.getConversation(existing.id)) || existing;
   }
 
   async sendMessage(input: {
@@ -230,7 +325,7 @@ export class ChatService {
     businessType?: string | null;
     businessRefId?: string | null;
     now?: Date;
-  }): Promise<{ message: ChatMessage; conversation: Conversation; duplicate: boolean }> {
+  }): Promise<{ message: ChatMessage; conversation: Conversation; duplicate: boolean; externalNotifies: ExternalNotifyPlan[] }> {
     const senderSub = assertUserPublicId(input.senderSub);
     const type = input.type || "TEXT";
     const body = sanitizeMessageBody(input.body);
@@ -250,7 +345,7 @@ export class ChatService {
     if (idempotencyKey) {
       if (idempotencyKey.length > 80) throw new ChatError(400, "幂等键过长");
       const existing = await this.store.findMessageByIdempotency(conversation.id, senderSub, idempotencyKey);
-      if (existing) return { message: existing, conversation, duplicate: true };
+      if (existing) return { message: existing, conversation, duplicate: true, externalNotifies: [] };
     }
     const message: ChatMessage = {
       id: newId(),
@@ -269,14 +364,38 @@ export class ChatService {
     } catch (error) {
       if (error instanceof DuplicateRecordError && idempotencyKey) {
         const existing = await this.store.findMessageByIdempotency(conversation.id, senderSub, idempotencyKey);
-        if (existing) return { message: existing, conversation, duplicate: true };
+        if (existing) return { message: existing, conversation, duplicate: true, externalNotifies: [] };
       }
       throw error;
     }
     const members = await this.store.listMembers(conversation.id);
+    const announcement = readAnnouncement(message.metadataJson);
+    const sender = await this.store.findUser(senderSub);
+    const externalNotifies: ExternalNotifyPlan[] = [];
     for (const member of members) {
       if (member.accountSub === senderSub || member.joinStatus !== "ACTIVE") continue;
+      const previousUnread = member.unreadCount;
       member.unreadCount += 1;
+      const decision = shouldNotifyWechat({
+        previousUnread,
+        muted: member.muted,
+        viewing: isConversationViewing(member.accountSub, conversation.id, now.getTime()),
+        active: true,
+        lastNotifiedAt: member.lastExternalNotifiedAt,
+        lastReadAt: member.lastReadAt,
+      });
+      if (decision.notify) {
+        member.lastExternalNotifiedAt = now;
+        externalNotifies.push(buildNotifyPlan({
+          conversation,
+          member,
+          senderName: sender?.displayName || "KKChat",
+          body,
+          type,
+          now,
+          announcement,
+        }));
+      }
       await this.store.saveMember(member);
     }
     await this.store.touchConversation(conversation.id, {
@@ -291,7 +410,7 @@ export class ChatService {
       accountSubs: members.filter((item) => item.joinStatus === "ACTIVE").map((item) => item.accountSub),
       data: toPublicMessage(message, members) as unknown as Record<string, unknown>,
     });
-    return { message, conversation: fresh, duplicate: false };
+    return { message, conversation: fresh, duplicate: false, externalNotifies };
   }
 
   async listInbox(accountSub: string): Promise<InboxItem[]> {
@@ -429,4 +548,67 @@ export class ChatService {
 
 export function conversationPath(conversationId: string) {
   return `/app/conversations/${encodeURIComponent(conversationId)}`;
+}
+
+export type ExternalNotifyPlan = {
+  eventType: "KKCHAT_MESSAGE_RECEIVED" | "COURSE_TEACHER_ANNOUNCEMENT";
+  recipientSub: string;
+  eventId: string;
+  dedupeKey: string;
+  conversationId: string;
+  templateData: Record<string, string>;
+};
+
+function readAnnouncement(metadataJson: string): { courseName: string } | null {
+  try {
+    const parsed = JSON.parse(metadataJson) as { notice?: unknown; courseName?: unknown };
+    if (parsed?.notice !== "course-announcement") return null;
+    const courseName = typeof parsed.courseName === "string" ? parsed.courseName.trim().slice(0, 20) : "";
+    return { courseName: courseName || "课程" };
+  } catch {
+    return null;
+  }
+}
+
+function buildNotifyPlan(input: {
+  conversation: Conversation;
+  member: Member;
+  senderName: string;
+  body: string;
+  type: MessageType;
+  now: Date;
+  announcement: { courseName: string } | null;
+}): ExternalNotifyPlan {
+  const cycle = wechatCycleKey({
+    conversationId: input.conversation.id,
+    recipientSub: input.member.accountSub,
+    lastReadAt: input.member.lastReadAt,
+  });
+  const occurredAt = input.now.toISOString().slice(0, 16).replace("T", " ");
+  if (input.announcement) {
+    return {
+      eventType: "COURSE_TEACHER_ANNOUNCEMENT",
+      recipientSub: input.member.accountSub,
+      eventId: cycle,
+      dedupeKey: cycle,
+      conversationId: input.conversation.id,
+      templateData: {
+        courseName: input.announcement.courseName,
+        summary: wechatExcerpt({ type: "TEXT", body: input.body, announcement: true }),
+        occurredAt,
+      },
+    };
+  }
+  return {
+    eventType: "KKCHAT_MESSAGE_RECEIVED",
+    recipientSub: input.member.accountSub,
+    eventId: cycle,
+    dedupeKey: cycle,
+    conversationId: input.conversation.id,
+    templateData: {
+      senderName: input.senderName.trim().slice(0, 20) || "KKChat",
+      excerpt: wechatExcerpt({ type: input.type, body: input.body }),
+      occurredAt,
+    },
+  };
 }

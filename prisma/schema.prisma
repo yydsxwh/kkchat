@@ -74,6 +74,8 @@ model ConversationMember {
   joinStatus     String    @default("ACTIVE")
   unreadCount    Int       @default(0)
   lastReadAt     DateTime?
+  /// 这一轮未读已经发过微信提醒的时间。已读后下一轮可以再发。
+  lastExternalNotifiedAt DateTime?
   muted          Boolean   @default(false)
   pinned         Boolean   @default(false)
   createdAt      DateTime  @default(now())
