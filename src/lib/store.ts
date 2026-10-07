@@ -30,6 +30,7 @@ export type Member = {
   joinStatus: "ACTIVE" | "LEFT";
   unreadCount: number;
   lastReadAt: Date | null;
+  lastExternalNotifiedAt: Date | null;
   muted: boolean;
   pinned: boolean;
 };
@@ -59,6 +60,7 @@ export interface ChatStore {
   findUser(accountSub: string): Promise<UserProjection | null>;
   findUsers(accountSubs: string[]): Promise<UserProjection[]>;
   findDirect(directKey: string): Promise<Conversation | null>;
+  findBusiness(sourceProduct: string, businessType: string, businessRefId: string): Promise<Conversation | null>;
   insertConversation(conversation: Conversation, members: Member[]): Promise<void>;
   getConversation(id: string): Promise<Conversation | null>;
   touchConversation(
@@ -121,6 +123,20 @@ export class MemoryChatStore implements ChatStore {
   async findDirect(directKey: string) {
     for (const conversation of this.conversations.values()) {
       if (conversation.directKey === directKey) return conversation;
+    }
+    return null;
+  }
+
+  async findBusiness(sourceProduct: string, businessType: string, businessRefId: string) {
+    for (const conversation of this.conversations.values()) {
+      if (
+        conversation.kind === "GROUP" &&
+        conversation.sourceProduct === sourceProduct &&
+        conversation.businessType === businessType &&
+        conversation.businessRefId === businessRefId
+      ) {
+        return conversation;
+      }
     }
     return null;
   }

@@ -1,41 +1,32 @@
 import { z } from "zod";
 import { getChatService } from "@/lib/app-service";
-import { conversationPath, toPublicMessage } from "@/lib/chat-service";
+import { conversationPath } from "@/lib/chat-service";
 import { loadConfig } from "@/lib/config";
-import { isMessageType, isUserPublicId } from "@/lib/domain";
+import { isUserPublicId } from "@/lib/domain";
 import { authorizeService, errorResponse, json } from "@/lib/http";
 import { dispatchWechatPlans } from "@/lib/official-notify";
-import { serviceLimiter } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 const schema = z.object({
   senderSub: z.string(),
-  recipientSub: z.string().optional(),
-  conversationId: z.string().optional(),
+  conversationId: z.string().min(1),
   body: z.string(),
-  messageType: z.string().optional(),
-  businessType: z.string().max(40).nullable().optional(),
-  businessRefId: z.string().max(80).nullable().optional(),
+  courseName: z.string().max(40),
   idempotencyKey: z.string().max(80),
-  metadata: z.record(z.string(), z.unknown()).optional(),
-  notifyWechat: z.boolean().optional(),
   senderName: z.string().max(40).optional(),
 });
 
+/** 老师公告。普通群聊仍走消息接口；这里才会记成课程通知。 */
 export async function POST(request: Request) {
   try {
     const { product } = authorizeService(request);
-    if (!serviceLimiter.allow(product)) return json({ error: "调用太频繁" }, 429);
     const body = schema.parse(await request.json());
     if (!isUserPublicId(body.senderSub)) return json({ error: "账号标识无效" }, 400);
-    if (!body.conversationId && !body.recipientSub) return json({ error: "缺少接收方" }, 400);
-    if (body.recipientSub && !isUserPublicId(body.recipientSub)) return json({ error: "账号标识无效" }, 400);
-    const messageType = body.messageType || "TEXT";
-    if (!isMessageType(messageType)) return json({ error: "不支持的消息类型" }, 400);
+    const service = getChatService();
     if (body.senderName?.trim()) {
-      await getChatService().upsertProjection({
+      await service.upsertProjection({
         accountSub: body.senderSub,
         displayName: body.senderName.trim(),
         kkNumber: null,
@@ -45,17 +36,14 @@ export async function POST(request: Request) {
         profileUpdatedAt: new Date(),
       });
     }
-    const result = await getChatService().sendMessage({
+    const result = await service.sendMessage({
       senderSub: body.senderSub,
-      recipientSub: body.recipientSub,
       conversationId: body.conversationId,
       body: body.body,
-      type: messageType,
-      metadata: body.metadata,
+      type: "TEXT",
       sourceProduct: product,
       idempotencyKey: body.idempotencyKey,
-      businessType: body.businessType,
-      businessRefId: body.businessRefId,
+      metadata: { notice: "course-announcement", courseName: body.courseName },
     });
     const href = conversationPath(result.conversation.id);
     const url = `${loadConfig().origin}${href}`;
@@ -66,7 +54,6 @@ export async function POST(request: Request) {
       href,
       url,
       wechatPlanned,
-      message: toPublicMessage(result.message, []),
     });
   } catch (error) {
     return errorResponse(error);

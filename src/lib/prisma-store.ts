@@ -50,6 +50,13 @@ export class PrismaChatStore implements ChatStore {
     return row ? this.conversation(row) : null;
   }
 
+  async findBusiness(sourceProduct: string, businessType: string, businessRefId: string) {
+    const row = await this.db.conversation.findFirst({
+      where: { kind: "GROUP", sourceProduct, businessType, businessRefId },
+    });
+    return row ? this.conversation(row) : null;
+  }
+
   async insertConversation(conversation: Conversation, members: Member[]) {
     try {
       await this.db.$transaction([
@@ -89,16 +96,19 @@ export class PrismaChatStore implements ChatStore {
   }
 
   async saveMember(member: Member) {
-    await this.db.conversationMember.update({
+    const data = {
+      role: member.role,
+      joinStatus: member.joinStatus,
+      unreadCount: member.unreadCount,
+      lastReadAt: member.lastReadAt,
+      lastExternalNotifiedAt: member.lastExternalNotifiedAt,
+      muted: member.muted,
+      pinned: member.pinned,
+    };
+    await this.db.conversationMember.upsert({
       where: { id: member.id },
-      data: {
-        role: member.role,
-        joinStatus: member.joinStatus,
-        unreadCount: member.unreadCount,
-        lastReadAt: member.lastReadAt,
-        muted: member.muted,
-        pinned: member.pinned,
-      },
+      create: { id: member.id, conversationId: member.conversationId, accountSub: member.accountSub, ...data },
+      update: data,
     });
   }
 
@@ -191,6 +201,7 @@ export class PrismaChatStore implements ChatStore {
     joinStatus: string;
     unreadCount: number;
     lastReadAt: Date | null;
+    lastExternalNotifiedAt: Date | null;
     muted: boolean;
     pinned: boolean;
   }): Member {

@@ -15,6 +15,7 @@ import { createPkcePair, signPayload, verifyPayload } from "../src/lib/crypto";
 import { assertOidcStart, startOidc, verifyIdToken } from "../src/lib/oidc";
 import { MemoryRealtimeBus } from "../src/lib/realtime";
 import { MemoryChatStore } from "../src/lib/store";
+import { shouldNotifyWechat, wechatExcerpt } from "../src/lib/wechat-policy";
 import { plan } from "../scripts/migrate-legacy-chat";
 
 const A = "usr_0123456789ABCDEFGHJKMNPQRS";
@@ -213,6 +214,70 @@ test("旧聊天迁移跳过没有 accountSub 的人", () => {
   });
   assert.equal(items.some((item) => item.action === "message"), false);
   assert.equal(items.filter((item) => item.action === "skip").length > 0, true);
+});
+
+test("普通互聊只在未读从 0 变 1 时计划微信，已读后可以再来一次", async () => {
+  const chat = service();
+  const conversation = await chat.ensureDirect({ senderSub: A, recipientSub: B, sourceProduct: "kkchat" });
+  const first = await chat.sendMessage({ senderSub: A, conversationId: conversation.id, body: "在吗，今晚见", sourceProduct: "kkchat" });
+  assert.equal(first.externalNotifies.length, 1);
+  assert.equal(first.externalNotifies[0]?.eventType, "KKCHAT_MESSAGE_RECEIVED");
+  assert.equal(first.externalNotifies[0]?.templateData.excerpt, "在吗，今晚见");
+  const second = await chat.sendMessage({ senderSub: A, conversationId: conversation.id, body: "还在吗", sourceProduct: "kkchat" });
+  assert.equal(second.externalNotifies.length, 0);
+  await chat.markRead(B, conversation.id, new Date(Date.now() + 1000));
+  const third = await chat.sendMessage({ senderSub: A, conversationId: conversation.id, body: "新的一轮", sourceProduct: "kkchat" });
+  assert.equal(third.externalNotifies.length, 1);
+  assert.notEqual(third.externalNotifies[0]?.eventId, first.externalNotifies[0]?.eventId);
+});
+
+test("正在查看、附件和退课成员不发微信", async () => {
+  assert.equal(shouldNotifyWechat({
+    previousUnread: 0,
+    muted: false,
+    viewing: true,
+    active: true,
+    lastNotifiedAt: null,
+    lastReadAt: null,
+  }).notify, false);
+  assert.equal(wechatExcerpt({ type: "TEXT", body: "https://cdn.example/a.pdf" }), "你有一条新消息");
+  const chat = service();
+  const group = await chat.ensureBusinessGroup({
+    creatorSub: A,
+    title: "高数",
+    memberSubs: [B, C],
+    sourceProduct: "course",
+    businessType: "course-class",
+    businessRefId: "course-1",
+  });
+  const announced = await chat.sendMessage({
+    senderSub: A,
+    conversationId: group.id,
+    body: "今晚课前看讲义",
+    sourceProduct: "course",
+    metadata: { notice: "course-announcement", courseName: "高数" },
+  });
+  assert.equal(announced.externalNotifies.some((item) => item.recipientSub === B), true);
+  assert.equal(announced.externalNotifies.find((item) => item.recipientSub === C)?.eventType, "COURSE_TEACHER_ANNOUNCEMENT");
+  assert.equal(announced.externalNotifies.find((item) => item.recipientSub === C)?.templateData.courseName, "高数");
+  await chat.ensureBusinessGroup({
+    creatorSub: A,
+    title: "高数",
+    memberSubs: [B],
+    sourceProduct: "course",
+    businessType: "course-class",
+    businessRefId: "course-1",
+  });
+  await chat.markRead(B, group.id, new Date(Date.now() + 1000));
+  const again = await chat.sendMessage({
+    senderSub: A,
+    conversationId: group.id,
+    body: "只发给还在课的人",
+    sourceProduct: "course",
+    metadata: { notice: "course-announcement", courseName: "高数" },
+  });
+  assert.equal(again.externalNotifies.some((item) => item.recipientSub === C), false);
+  assert.equal(again.externalNotifies.some((item) => item.recipientSub === B), true);
 });
 
 test("实时事件只发给参与者", () => {
