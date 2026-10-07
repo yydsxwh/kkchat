@@ -7,6 +7,8 @@ export const RECALL_WINDOW_MS = 2 * 60 * 1000;
 export const PREVIEW_LENGTH = 80;
 export const DIRECTORY_RESULT_LIMIT = 20;
 export const GROUP_MEMBER_LIMIT = 50;
+/** 课程群由服务端同步在读成员，比随便拉的群更大，但仍有上限。 */
+export const COURSE_GROUP_MEMBER_LIMIT = 500;
 export const INBOX_LIMIT = 50;
 export const MESSAGE_PAGE_SIZE = 100;
 export const METADATA_MAX_LENGTH = 4000;

@@ -2,7 +2,9 @@ import { z } from "zod";
 import { getChatService } from "@/lib/app-service";
 import { assertMutation, errorResponse, json, requireUser } from "@/lib/http";
 import { sendLimiter } from "@/lib/rate-limit";
-import { toPublicMessage } from "@/lib/chat-service";
+import { conversationPath, toPublicMessage } from "@/lib/chat-service";
+import { loadConfig } from "@/lib/config";
+import { dispatchWechatPlans } from "@/lib/official-notify";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -28,6 +30,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       type: "TEXT",
     });
     const members = [{ accountSub: session.accountSub, joinStatus: "ACTIVE", lastReadAt: null }];
+    const url = `${loadConfig().origin}${conversationPath(result.conversation.id)}`;
+    await dispatchWechatPlans(result.externalNotifies, url);
     return json({ message: toPublicMessage(result.message, members), duplicate: result.duplicate });
   } catch (error) {
     return errorResponse(error);

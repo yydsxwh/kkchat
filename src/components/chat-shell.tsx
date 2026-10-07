@@ -99,6 +99,16 @@ export function ChatShell({ me, initialConversationId }: { me: CurrentUser; init
   }, [activeId, loadThread]);
 
   useEffect(() => {
+    if (!activeId) return;
+    const ping = () => {
+      void api(`/api/conversations/${activeId}/presence`, { method: "POST", json: {} }).catch(() => undefined);
+    };
+    ping();
+    const timer = setInterval(ping, 20_000);
+    return () => clearInterval(timer);
+  }, [activeId]);
+
+  useEffect(() => {
     const source = new EventSource("/api/realtime");
     const onMessage = (event: MessageEvent) => {
       const message = JSON.parse(event.data) as ChatMessage;
