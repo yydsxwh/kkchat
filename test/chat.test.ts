@@ -216,6 +216,18 @@ test("旧聊天迁移跳过没有 accountSub 的人", () => {
   assert.equal(items.filter((item) => item.action === "skip").length > 0, true);
 });
 
+test("最近私聊只返回对方公开资料，不表示已经是日事授权", async () => {
+  const chat = service();
+  await chat.ensureDirect({ senderSub: A, recipientSub: B, sourceProduct: "kkchat" });
+  await chat.sendMessage({ senderSub: A, recipientSub: B, body: "在吗", sourceProduct: "kkchat", idempotencyKey: "contact-1" });
+  const contacts = await chat.listDirectContacts(A);
+  assert.equal(contacts.length, 1);
+  assert.equal(contacts[0]?.sub, B);
+  assert.equal("phone" in (contacts[0] || {}), false);
+  assert.equal("email" in (contacts[0] || {}), false);
+  assert.equal((await chat.listDirectContacts(C)).length, 0);
+});
+
 test("普通互聊只在未读从 0 变 1 时计划微信，已读后可以再来一次", async () => {
   const chat = service();
   const conversation = await chat.ensureDirect({ senderSub: A, recipientSub: B, sourceProduct: "kkchat" });

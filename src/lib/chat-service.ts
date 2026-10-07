@@ -51,6 +51,14 @@ export type InboxItem = {
   businessRefId: string | null;
 };
 
+export type DirectContact = {
+  sub: string;
+  displayName: string;
+  avatarUrl: string;
+  kkNumber: number | null;
+  username: string | null;
+};
+
 export type PublicMessage = {
   id: string;
   conversationId: string;
@@ -494,6 +502,26 @@ export class ChatService {
 
   async totalUnread(accountSub: string) {
     return this.store.totalUnread(assertUserPublicId(accountSub));
+  }
+
+  /** 最近私聊对象。这是快捷联系人，不是好友关系，也不能当作日事授权。 */
+  async listDirectContacts(accountSub: string): Promise<DirectContact[]> {
+    const inbox = await this.listInbox(accountSub);
+    const seen = new Set<string>();
+    const contacts: DirectContact[] = [];
+    for (const item of inbox) {
+      if (item.kind !== "DIRECT" || !item.peer) continue;
+      if (seen.has(item.peer.accountSub)) continue;
+      seen.add(item.peer.accountSub);
+      contacts.push({
+        sub: item.peer.accountSub,
+        displayName: item.peer.displayName,
+        avatarUrl: item.peer.avatarUrl,
+        kkNumber: item.peer.kkNumber,
+        username: item.peer.username,
+      });
+    }
+    return contacts;
   }
 
   private async ensureRow(accountSub: string, now: Date) {
