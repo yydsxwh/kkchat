@@ -27,9 +27,9 @@ export function holdCookieName(sessionId: string): string {
   return `${HOLD_COOKIE_PREFIX}${safe}`;
 }
 
-/** 多账号开关。显式写成 0 才回到旧的单 Cookie 行为，便于整站回滚。 */
+/** 安全开关：仅 MULTI_ACCOUNT_TABS=1 才启用，缺省/0 始终保留旧登录，避免半套升级串号。 */
 export function multiAccountTabsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.MULTI_ACCOUNT_TABS !== "0";
+  return env.MULTI_ACCOUNT_TABS === "1";
 }
 
 export function maskEmail(email: string | null | undefined): string {
