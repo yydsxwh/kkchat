@@ -109,7 +109,8 @@ export function ChatShell({ me, initialConversationId }: { me: CurrentUser; init
   }, [activeId]);
 
   useEffect(() => {
-    const source = new EventSource("/api/realtime");
+    const tab = (window as Window & { __yydsTabContext?: () => string }).__yydsTabContext?.() || "";
+    const source = new EventSource(tab ? `/api/realtime?tab=${encodeURIComponent(tab)}` : "/api/realtime");
     const onMessage = (event: MessageEvent) => {
       const message = JSON.parse(event.data) as ChatMessage;
       setConversations((prev) => bumpConversation(prev, message, activeId, me.accountSub));
