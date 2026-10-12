@@ -8,7 +8,7 @@ import { applyAuthCookies, freshCsrf } from "@/lib/http";
 import { assertOidcStart, claimsToProjection, exchangeAuthorizationCode, verifyIdToken } from "@/lib/oidc";
 import { getChatService } from "@/lib/app-service";
 import { DEVICE_COOKIE, OIDC_COOKIE, createBrowserSession, linkKkAccount, openOidc } from "@/lib/session";
-import { holdCookieName } from "@/lib/tab-decision";
+import { holdCookieName, multiAccountTabsEnabled } from "@/lib/tab-decision";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -45,6 +45,17 @@ export async function GET(request: Request) {
     const projection = claimsToProjection(claims);
     await getChatService().upsertProjection(projection);
     const session = await createBrowserSession(projection.accountSub);
+    // Safe partial rollout: leave the legacy single-account session untouched
+    // while other products have not yet enabled tab-scoped sessions.
+    if (!multiAccountTabsEnabled()) {
+      const response = NextResponse.redirect(new URL(safeReturnTo(start.returnTo), config.origin));
+      applyAuthCookies(
+        response,
+        { sessionId: session.id, csrf: freshCsrf(), clearOidc: true },
+        config,
+      );
+      return response;
+    }
     const linked = await linkKkAccount({
       deviceToken: readCookie(request.headers.get("cookie"), DEVICE_COOKIE),
       sessionId: session.id,
