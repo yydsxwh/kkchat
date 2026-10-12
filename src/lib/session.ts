@@ -3,7 +3,7 @@ import { randomToken, readCookie, signPayload, verifyPayload } from "./crypto";
 import { loadConfig, sessionSecretReady, type KkchatConfig } from "./config";
 import { prisma } from "./db";
 import type { OidcStart } from "./oidc";
-import { DEVICE_COOKIE, holdCookieName, isTabContextId, resolveAccess, type BrokerState } from "./tab-decision";
+import { DEVICE_COOKIE, holdCookieName, isTabContextId, multiAccountTabsEnabled, resolveAccess, type BrokerState } from "./tab-decision";
 
 export { DEVICE_COOKIE };
 
@@ -37,9 +37,13 @@ export async function createBrowserSession(accountSub: string, now = new Date())
 }
 
 export async function readSession(request: Request, now = new Date()): Promise<SessionRecord | null> {
-  const tabbed = await readTabSession(request, now);
-  if (tabbed === "ambiguous") return null;
-  if (tabbed) return tabbed;
+  // Once a device-scoped session exists, NEVER fall back to the old shared
+  // session cookie. A missing/expired/revoked/ambiguous tab must fail closed.
+  // The compatibility path below is only for browsers not yet migrated.
+  if (multiAccountTabsEnabled() && readCookie(request.headers.get("cookie"), DEVICE_COOKIE)) {
+    const tabbed = await readTabSession(request, now);
+    return tabbed && tabbed !== "ambiguous" ? tabbed : null;
+  }
   const id = readCookie(request.headers.get("cookie"), SESSION_COOKIE);
   if (!id) return null;
   const row = await prisma.browserSession.findUnique({ where: { id } });
@@ -143,11 +147,18 @@ export async function linkKkAccount(input: { deviceToken?: string; sessionId: st
   const count = await prisma.kkDeviceAccount.count({ where: { deviceId: device.id, revokedAt: null } });
   if (count > 1) await prisma.kkDevice.update({ where: { id: device.id }, data: { explicitPick: true } });
   if (isTabContextId(input.contextId)) {
-    await prisma.kkTab.upsert({
+    // A context already owned by another browser device must not be rebound.
+    const existing = await prisma.kkTab.findUnique({
       where: { id: input.contextId },
-      create: { id: input.contextId, deviceId: device.id, sessionId: input.sessionId },
-      update: { deviceId: device.id, sessionId: input.sessionId, revokedAt: null },
+      select: { deviceId: true },
     });
+    if (!existing || existing.deviceId === device.id) {
+      await prisma.kkTab.upsert({
+        where: { id: input.contextId },
+        create: { id: input.contextId, deviceId: device.id, sessionId: input.sessionId },
+        update: { sessionId: input.sessionId, revokedAt: null },
+      });
+    }
   }
   return { deviceToken: token, explicit: count > 1, holdName: holdCookieName(input.sessionId) };
 }
