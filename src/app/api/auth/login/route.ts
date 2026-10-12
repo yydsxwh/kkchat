@@ -5,6 +5,7 @@ import { prisma } from "@/lib/db";
 import { applyAuthCookies } from "@/lib/http";
 import { buildAuthorizeUrl, startOidc } from "@/lib/oidc";
 import { sealOidc } from "@/lib/session";
+import { multiAccountTabsEnabled } from "@/lib/tab-decision";
 import { safeReturnTo } from "@/lib/domain";
 
 export const dynamic = "force-dynamic";
@@ -16,6 +17,15 @@ export async function GET(request: Request) {
   const returnTo = safeReturnTo(url.searchParams.get("returnTo"));
   if (!sessionSecretReady(config) || !config.accountClientSecret) {
     return NextResponse.redirect(new URL("/?error=login-unconfigured", config.origin));
+  }
+  // With rollout flag off, keep the original single-account OAuth callback
+  // and avoid requiring the new per-tab attempts table.
+  if (!multiAccountTabsEnabled()) {
+    const { start, challenge } = startOidc(returnTo);
+    const sealed = sealOidc(start, config.sessionSecret);
+    const response = NextResponse.redirect(buildAuthorizeUrl(config, start, challenge));
+    applyAuthCookies(response, { oidc: sealed }, config);
+    return response;
   }
   const tab = request.headers.get("x-yyds-tab") || "";
   const wantsJson = (request.headers.get("accept") || "").includes("application/json");
