@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="expo.modules.kkchatnative" >
+
+    <uses-sdk android:minSdkVersion="26" />
+    <!-- 官网安装包的应用内更新：只把已校验的安装包交给系统安装界面，由用户确认。 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <application>
+        <provider
+            android:name="expo.modules.kkchatnative.KkchatUpdateFileProvider"
+            android:authorities="dollar_openBracket_applicationId_closeBracket.kkchat.updates"
+            android:exported="false"
+            android:grantUriPermissions="true" >
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/kkchat_update_paths" />
+        </provider>
+    </application>
+
+</manifest>
