@@ -1,9 +1,11 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import { useI18n } from "./i18n";
 
 export function LogoutButton() {
   const router = useRouter();
+  const { t } = useI18n();
   return (
     <button
       className="btn btn-ghost"
@@ -14,12 +16,15 @@ export function LogoutButton() {
           method: "POST",
           headers: { "x-kkchat-csrf": csrf },
         }).then(() => {
+          for (const key of Object.keys(localStorage)) {
+            if (key.startsWith("kkchat.")) localStorage.removeItem(key);
+          }
           router.push("/");
           router.refresh();
         });
       }}
     >
-      退出登录
+      {t("signOut")}
     </button>
   );
 }

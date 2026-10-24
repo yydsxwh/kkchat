@@ -2,321 +2,550 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ApiError, newClientId } from "@shared/client";
+import { formatMessageTime, type MessageKey } from "@shared/i18n";
+import { applyPeerRead, bumpInbox, mergeMessages, SeqCursor, sortInbox } from "@shared/merge";
+import type {
+  FriendRequestView,
+  FriendView,
+  InboxItem,
+  LocalMessage,
+  Participant,
+  PublicMessage,
+  PublicUser,
+  Relationship,
+} from "@shared/types";
 import type { CurrentUser } from "@/lib/current-user";
+import { AddFriendModal, QrModal, ReportModal, type ReportTarget } from "./friend-modals";
+import { useI18n } from "./i18n";
+import { MePanel } from "./me-panel";
+import { webClient as api } from "./web-client";
 
-type Peer = {
-  accountSub: string;
-  kkNumber: number | null;
-  username: string | null;
-  displayName: string;
-  avatarUrl: string;
-};
+type Tab = "chats" | "contacts" | "me";
+type Connection = "online" | "reconnecting" | "offline";
 
-type Conversation = {
-  id: string;
-  kind: "DIRECT" | "GROUP" | "CHANNEL";
-  title: string;
-  avatarUrl: string;
-  peer: Peer | null;
-  lastMessageAt: string | null;
-  lastMessagePreview: string;
-  unreadCount: number;
-};
-
-type ChatMessage = {
-  id: string;
-  conversationId: string;
-  senderSub: string;
-  type: string;
-  body: string | null;
-  recalledAt: string | null;
-  createdAt: string;
-  read: boolean;
-  localStatus?: "sending" | "failed";
-};
-
-type DirectoryHit = {
-  sub: string;
-  kk_number: number | null;
-  username: string | null;
-  name: string;
-  avatar: string;
-};
-
-export function ChatShell({ me, initialConversationId }: { me: CurrentUser; initialConversationId: string }) {
-  const [conversations, setConversations] = useState<Conversation[]>([]);
+export function ChatShell({ me, initialConversationId, initialTab = "chats" }: { me: CurrentUser; initialConversationId: string; initialTab?: Tab }) {
+  const { t, locale } = useI18n();
+  const [tab, setTab] = useState<Tab>(initialTab);
+  const [inbox, setInbox] = useState<InboxItem[]>([]);
+  const [chatFilter, setChatFilter] = useState("");
   const [activeId, setActiveId] = useState(initialConversationId);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [draft, setDraft] = useState("");
-  const [query, setQuery] = useState("");
-  const [hits, setHits] = useState<DirectoryHit[]>([]);
-  const [searchError, setSearchError] = useState("");
+  const [messages, setMessages] = useState<LocalMessage[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [participants, setParticipants] = useState<Participant[]>([]);
+  const [friends, setFriends] = useState<FriendView[]>([]);
+  const [requests, setRequests] = useState<{ incoming: FriendRequestView[]; outgoing: FriendRequestView[] }>({ incoming: [], outgoing: [] });
+  const [friendFilter, setFriendFilter] = useState("");
+  const [profileSub, setProfileSub] = useState<string | null>(null);
+  const [relationship, setRelationship] = useState<Relationship | null>(null);
   const [showProfile, setShowProfile] = useState(false);
-  const [showGroup, setShowGroup] = useState(false);
-  const [groupTitle, setGroupTitle] = useState("");
-  const [groupMembers, setGroupMembers] = useState<DirectoryHit[]>([]);
+  const [showAdd, setShowAdd] = useState(false);
+  const [showQr, setShowQr] = useState(false);
+  const [reportTarget, setReportTarget] = useState<ReportTarget | null>(null);
+  const [draft, setDraft] = useState("");
+  const [connection, setConnection] = useState<Connection>("online");
+  const [toast, setToast] = useState("");
   const [unseen, setUnseen] = useState(0);
-  const [stick, setStick] = useState(true);
-  const [now, setNow] = useState(0);
+  const [moderator, setModerator] = useState(false);
   const scroller = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
+  const activeRef = useRef(activeId);
+  const cursorRef = useRef(new SeqCursor(0));
+  const syncingRef = useRef(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const imageInput = useRef<HTMLInputElement>(null);
+  const cursorKey = `kkchat.cursor.${me.accountSub}`;
 
-  const active = conversations.find((item) => item.id === activeId) || null;
+  const active = inbox.find((item) => item.id === activeId) || null;
 
-  const loadInbox = useCallback(async () => {
-    const data = await api<{ conversations: Conversation[] }>("/api/conversations");
-    setConversations(data.conversations);
+  useEffect(() => {
+    activeRef.current = activeId;
+  }, [activeId]);
+
+  const flash = useCallback((text: string) => {
+    setToast(text);
+    window.setTimeout(() => setToast(""), 3200);
+  }, []);
+
+  const describe = useCallback(
+    (error: unknown) => (error instanceof ApiError ? (error.status === 0 ? t("networkError") : error.message) : t("networkError")),
+    [t],
+  );
+
+  const loadInbox = useCallback(async () => setInbox(sortInbox(await api.inbox())), []);
+  const loadContacts = useCallback(async () => {
+    const [list, pending] = await Promise.all([api.friends(), api.requests()]);
+    setFriends(list);
+    setRequests(pending);
   }, []);
 
   const loadThread = useCallback(async (id: string) => {
-    const data = await api<{ messages: ChatMessage[] }>(`/api/conversations/${id}`);
-    setMessages(data.messages);
-    await api(`/api/conversations/${id}/read`, { method: "POST", json: {} });
-    setConversations((prev) => prev.map((item) => (item.id === id ? { ...item, unreadCount: 0 } : item)));
+    const data = await api.thread(id);
+    if (activeRef.current !== id) return;
+    setMessages((prev) => mergeMessages(prev.filter((item) => item.conversationId === id && item.localStatus), data.messages));
+    setHasMore(data.hasMore);
+    setParticipants(data.participants);
+    setInbox((prev) => sortInbox(prev.some((item) => item.id === id) ? prev.map((item) => (item.id === id ? data.conversation : item)) : [data.conversation, ...prev]));
+    const last = data.messages.at(-1);
+    if (last && document.visibilityState === "visible") {
+      const read = await api.markRead(id, last.seq);
+      setInbox((prev) => prev.map((item) => (item.id === id ? { ...item, unreadCount: read.unreadCount, lastReadSeq: read.lastReadSeq } : item)));
+    }
   }, []);
 
-  useEffect(() => {
-    const update = () => setNow(Date.now());
-    const first = setTimeout(update, 0);
-    const timer = setInterval(update, 15_000);
-    return () => {
-      clearTimeout(first);
-      clearInterval(timer);
-    };
+  const loadRelationship = useCallback(async (sub: string) => {
+    setRelationship(await api.relationship(sub));
   }, []);
 
+  /** 全量重新对齐：游标过旧或首次进入时用。 */
+  const resync = useCallback(async () => {
+    const meInfo = await api.me();
+    setModerator(meInfo.moderator);
+    await Promise.all([loadInbox(), loadContacts()]);
+    if (activeRef.current) await loadThread(activeRef.current).catch(() => undefined);
+    cursorRef.current = new SeqCursor(meInfo.syncSeq);
+    localStorage.setItem(cursorKey, String(meInfo.syncSeq));
+  }, [cursorKey, loadContacts, loadInbox, loadThread]);
+
+  const applyEvent = useCallback(
+    (kind: string, conversationId: string | null, data: Record<string, unknown>) => {
+      if (kind === "message" || kind === "recall") {
+        const message = data as unknown as PublicMessage;
+        setInbox((prev) => {
+          if (!prev.some((item) => item.id === message.conversationId)) {
+            void loadInbox();
+            return prev;
+          }
+          return bumpInbox(prev, message, me.accountSub, activeRef.current);
+        });
+        if (message.conversationId === activeRef.current) {
+          setMessages((prev) => mergeMessages(prev, [message]));
+          if (kind === "message" && message.senderSub !== me.accountSub) {
+            if (stickRef.current && document.visibilityState === "visible") {
+              void api.markRead(message.conversationId, message.seq).catch(() => undefined);
+            } else {
+              setUnseen((count) => count + 1);
+            }
+          }
+        }
+        return;
+      }
+      if (kind === "read") {
+        const reader = String(data.accountSub || "");
+        const lastReadSeq = Number(data.lastReadSeq || 0);
+        if (reader === me.accountSub) {
+          setInbox((prev) => prev.map((item) => (item.id === conversationId ? { ...item, unreadCount: Number(data.unreadCount || 0), lastReadSeq } : item)));
+        } else if (conversationId === activeRef.current) {
+          setMessages((prev) => applyPeerRead(prev, me.accountSub, reader, lastReadSeq));
+        }
+        return;
+      }
+      if (kind === "conversation") {
+        void loadInbox();
+        if (conversationId && conversationId === activeRef.current && data.action === "access_changed") void loadThread(conversationId);
+        return;
+      }
+      if (kind === "friend" || kind === "request" || kind === "block") {
+        void loadContacts();
+        void loadInbox();
+        setProfileSub((current) => {
+          if (current) void loadRelationship(current).catch(() => undefined);
+          return current;
+        });
+      }
+    },
+    [loadContacts, loadInbox, loadRelationship, loadThread, me.accountSub],
+  );
+
+  /** 断线、重连、跳号时按 seq 补拉；重复事件按 seq 丢弃。 */
+  const catchUp = useCallback(async () => {
+    if (syncingRef.current) return;
+    syncingRef.current = true;
+    try {
+      for (let guard = 0; guard < 20; guard += 1) {
+        const page = await api.sync(cursorRef.current.value);
+        if (page.resyncRequired) {
+          await resync();
+          break;
+        }
+        for (const event of page.events) {
+          if (cursorRef.current.accept(event.seq) === "new") applyEvent(event.kind, event.conversationId, event.data);
+          else if (event.seq > cursorRef.current.value) cursorRef.current.value = event.seq;
+        }
+        localStorage.setItem(cursorKey, String(cursorRef.current.value));
+        if (!page.hasMore) break;
+      }
+    } finally {
+      syncingRef.current = false;
+    }
+  }, [applyEvent, cursorKey, resync]);
+
   useEffect(() => {
-    // 列表在服务端，挂载后拉取；不能在渲染期间发请求。
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void loadInbox().catch(() => undefined);
-  }, [loadInbox]);
+    const saved = Number(localStorage.getItem(cursorKey) || "0");
+    // 首次进入先全量拉取再接实时；挂载后才发请求。
+    void (saved > 0 ? Promise.all([loadInbox(), loadContacts(), api.me().then((info) => setModerator(info.moderator))]).then(() => {
+      cursorRef.current = new SeqCursor(saved);
+    }) : resync()).catch(() => setConnection("offline"));
+  }, [cursorKey, loadContacts, loadInbox, resync]);
 
   useEffect(() => {
     if (!activeId) return;
-    // 切换会话时向服务端取消息，失败则回到列表。
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setUnseen(0);
+    stickRef.current = true;
+    // 切换会话时取消息。失败则回到列表。
     void loadThread(activeId).catch(() => setActiveId(""));
+    const ping = () => void api.presence(activeId).catch(() => undefined);
+    ping();
+    const timer = window.setInterval(ping, 20_000);
+    return () => window.clearInterval(timer);
   }, [activeId, loadThread]);
 
   useEffect(() => {
-    if (!activeId) return;
-    const ping = () => {
-      void api(`/api/conversations/${activeId}/presence`, { method: "POST", json: {} }).catch(() => undefined);
-    };
-    ping();
-    const timer = setInterval(ping, 20_000);
-    return () => clearInterval(timer);
-  }, [activeId]);
+    if (!profileSub) return;
+    // 打开资料时拉关系状态。
+    void loadRelationship(profileSub).catch((error) => flash(describe(error)));
+  }, [describe, flash, loadRelationship, profileSub]);
 
   useEffect(() => {
-    const tab = (window as Window & { __yydsTabContext?: () => string }).__yydsTabContext?.() || "";
-    const source = new EventSource(tab ? `/api/realtime?tab=${encodeURIComponent(tab)}` : "/api/realtime");
-    const onMessage = (event: MessageEvent) => {
-      const message = JSON.parse(event.data) as ChatMessage;
-      setConversations((prev) => bumpConversation(prev, message, activeId, me.accountSub));
-      if (message.senderSub === me.accountSub) return;
-      if (message.conversationId !== activeId) return;
-      setMessages((prev) => (prev.some((item) => item.id === message.id) ? prev : [...prev, message]));
-      if (stickRef.current) {
-        void api(`/api/conversations/${message.conversationId}/read`, { method: "POST", json: {} });
-      } else {
-        setUnseen((count) => count + 1);
+    const tabContext = (window as Window & { __yydsTabContext?: () => string }).__yydsTabContext?.() || "";
+    let source: EventSource | null = null;
+    let stopped = false;
+    const open = () => {
+      if (stopped) return;
+      source = new EventSource(tabContext ? `/api/realtime?tab=${encodeURIComponent(tabContext)}` : "/api/realtime");
+      const handle = (kind: string) => (event: MessageEvent) => {
+        const payload = JSON.parse(event.data) as { seq: number; conversationId: string | null; data: Record<string, unknown> };
+        const verdict = cursorRef.current.accept(payload.seq);
+        if (verdict === "new") {
+          applyEvent(kind, payload.conversationId, payload.data);
+          localStorage.setItem(cursorKey, String(cursorRef.current.value));
+        } else if (verdict === "gap") {
+          void catchUp();
+        }
+      };
+      for (const kind of ["message", "recall", "read", "conversation", "friend", "request", "block"]) {
+        source.addEventListener(kind, handle(kind) as EventListener);
       }
+      source.addEventListener("ready", () => {
+        setConnection("online");
+        void catchUp();
+      });
+      source.addEventListener("session", () => {
+        stopped = true;
+        source?.close();
+        window.location.replace(`${window.location.origin}/?error=session-revoked`);
+      });
+      source.onerror = () => setConnection(navigator.onLine ? "reconnecting" : "offline");
     };
-    const onRecall = (event: MessageEvent) => {
-      const message = JSON.parse(event.data) as ChatMessage;
-      setMessages((prev) => prev.map((item) => (item.id === message.id ? { ...item, ...message } : item)));
+    open();
+    const onOnline = () => {
+      setConnection("reconnecting");
+      void catchUp();
     };
-    const onRead = () => {
-      if (!activeId) return;
-      void loadThread(activeId);
+    const onOffline = () => setConnection("offline");
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void catchUp();
     };
-    source.addEventListener("message", onMessage);
-    source.addEventListener("recall", onRecall);
-    source.addEventListener("read", onRead);
-    return () => source.close();
-  }, [activeId, loadThread, me.accountSub]);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      stopped = true;
+      source?.close();
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [applyEvent, catchUp, cursorKey]);
 
   useEffect(() => {
-    if (!stick) return;
+    if (!stickRef.current) return;
     const node = scroller.current;
     if (node) node.scrollTop = node.scrollHeight;
-  }, [messages, stick, activeId]);
+  }, [messages, activeId]);
 
-  const unreadTotal = useMemo(
-    () => conversations.reduce((sum, item) => sum + item.unreadCount, 0),
-    [conversations],
-  );
+  const unreadTotal = useMemo(() => inbox.reduce((sum, item) => sum + (item.muted ? 0 : item.unreadCount), 0), [inbox]);
+  const filteredInbox = useMemo(() => {
+    const keyword = chatFilter.trim().toLowerCase();
+    if (!keyword) return inbox;
+    return inbox.filter((item) => `${item.title} ${item.peer?.kkNumber ?? ""} ${item.peer?.username ?? ""}`.toLowerCase().includes(keyword));
+  }, [chatFilter, inbox]);
+  const filteredFriends = useMemo(() => {
+    const keyword = friendFilter.trim().toLowerCase();
+    if (!keyword) return friends;
+    return friends.filter((item) => `${item.remark} ${item.peer.displayName} ${item.peer.kkNumber ?? ""} ${item.peer.username ?? ""}`.toLowerCase().includes(keyword));
+  }, [friendFilter, friends]);
 
-  async function search(text: string) {
-    const keyword = text.trim();
-    setQuery(text);
-    setSearchError("");
-    if (!keyword) {
-      setHits([]);
-      return;
-    }
-    const params = new URLSearchParams();
-    if (/^[1-9]\d{1,11}$/.test(keyword)) params.set("kkNumber", keyword);
-    else if (/^[a-zA-Z][a-zA-Z0-9_]{3,19}$/.test(keyword)) params.set("username", keyword.toLowerCase());
-    else params.set("q", keyword);
-    try {
-      const data = await api<{ users: DirectoryHit[] }>(`/api/directory?${params.toString()}`);
-      let users = data.users;
-      if (users.length === 0 && params.has("username")) {
-        const again = await api<{ users: DirectoryHit[] }>(`/api/directory?q=${encodeURIComponent(keyword)}`);
-        users = again.users;
-      }
-      setHits(users);
-    } catch (error) {
-      setHits([]);
-      setSearchError(error instanceof Error ? error.message : "搜索失败");
-    }
-  }
-
-  async function openDirect(hit: DirectoryHit) {
-    const data = await api<{ conversationId: string }>("/api/conversations", {
-      method: "POST",
-      json: {
-        recipientSub: hit.sub,
-        displayName: hit.name,
-        kkNumber: hit.kk_number,
-        username: hit.username,
-        avatarUrl: hit.avatar,
-      },
-    });
-    setHits([]);
-    setQuery("");
-    setActiveId(data.conversationId);
+  function openConversation(id: string) {
+    setTab("chats");
+    setActiveId(id);
     setShowProfile(false);
-    window.history.replaceState(null, "", `/app/conversations/${data.conversationId}`);
-    await loadInbox();
+    window.history.replaceState(null, "", `/app/conversations/${id}`);
   }
 
-  async function send() {
-    const text = draft.trim();
-    if (!text || !activeId) return;
-    const idempotencyKey = crypto.randomUUID();
-    const localId = `local-${idempotencyKey}`;
-    const optimistic: ChatMessage = {
-      id: localId,
-      conversationId: activeId,
+  async function openProfile(sub: string) {
+    setProfileSub(sub);
+    setShowProfile(true);
+  }
+
+  async function startChat(sub: string) {
+    try {
+      const { conversationId } = await api.openDirect(sub);
+      await loadInbox();
+      openConversation(conversationId);
+    } catch (error) {
+      flash(describe(error));
+    }
+  }
+
+  async function deliver(local: LocalMessage, payload: { body: string; type: "TEXT" | "IMAGE" | "FILE"; attachmentId?: string }) {
+    try {
+      const data = await api.send(local.conversationId, { ...payload, clientMessageId: local.clientMessageId! });
+      setMessages((prev) => mergeMessages(prev, [data.message]));
+      setInbox((prev) => bumpInbox(prev, data.message, me.accountSub, activeRef.current));
+    } catch (error) {
+      setMessages((prev) =>
+        prev.map((item) => (item.id === local.id ? { ...item, localStatus: "failed", localError: describe(error) } : item)),
+      );
+    }
+  }
+
+  function optimistic(conversationId: string, type: "TEXT" | "IMAGE" | "FILE", body: string): LocalMessage {
+    const clientMessageId = newClientId();
+    return {
+      id: `local-${clientMessageId}`,
+      conversationId,
+      seq: 0,
       senderSub: me.accountSub,
-      type: "TEXT",
-      body: text,
+      type,
+      body,
+      metadata: {},
+      attachment: null,
+      sourceProduct: "kkchat",
       recalledAt: null,
       createdAt: new Date().toISOString(),
       read: false,
+      clientMessageId,
       localStatus: "sending",
     };
-    setMessages((prev) => [...prev, optimistic]);
+  }
+
+  async function sendText() {
+    const text = draft.trim();
+    if (!text || !activeId) return;
+    const local = optimistic(activeId, "TEXT", text);
+    setMessages((prev) => [...prev, local]);
     setDraft("");
-    setStick(true);
+    stickRef.current = true;
+    await deliver(local, { body: text, type: "TEXT" });
+  }
+
+  async function sendFile(file: File, kind: "image" | "file") {
+    if (!activeId) return;
+    const type = kind === "image" ? "IMAGE" : "FILE";
+    const local = optimistic(activeId, type, file.name);
+    setMessages((prev) => [...prev, local]);
     stickRef.current = true;
     try {
-      const data = await api<{ message: ChatMessage }>(`/api/conversations/${activeId}/messages`, {
-        method: "POST",
-        json: { body: text, idempotencyKey },
-      });
-      setMessages((prev) => prev.map((item) => (item.id === localId ? data.message : item)));
-      void loadInbox();
-    } catch {
-      setMessages((prev) => prev.map((item) => (item.id === localId ? { ...item, localStatus: "failed" } : item)));
+      const form = new FormData();
+      form.set("file", file);
+      form.set("kind", kind);
+      form.set("clientUploadId", local.clientMessageId!);
+      const uploaded = await api.upload(activeId, form);
+      await deliver(local, { body: "", type, attachmentId: uploaded.attachment.id });
+    } catch (error) {
+      setMessages((prev) => prev.map((item) => (item.id === local.id ? { ...item, localStatus: "failed", localError: describe(error) } : item)));
+      pendingFiles.current.set(local.id, { file, kind });
     }
   }
 
-  async function recall(id: string) {
-    const data = await api<{ message: ChatMessage }>(`/api/messages/${id}/recall`, { method: "POST", json: {} });
-    setMessages((prev) => prev.map((item) => (item.id === id ? data.message : item)));
+  const pendingFiles = useRef(new Map<string, { file: File; kind: "image" | "file" }>());
+
+  async function retry(message: LocalMessage) {
+    setMessages((prev) => prev.map((item) => (item.id === message.id ? { ...item, localStatus: "sending", localError: undefined } : item)));
+    const file = pendingFiles.current.get(message.id);
+    if (file) {
+      pendingFiles.current.delete(message.id);
+      setMessages((prev) => prev.filter((item) => item.id !== message.id));
+      await sendFile(file.file, file.kind);
+      return;
+    }
+    await deliver(message, { body: message.body || "", type: "TEXT" });
   }
 
-  async function createGroup() {
-    const data = await api<{ conversationId: string }>("/api/groups", {
-      method: "POST",
-      json: { title: groupTitle, memberSubs: groupMembers.map((item) => item.sub) },
+  async function loadEarlier() {
+    if (!activeId) return;
+    const first = messages.find((item) => !item.localStatus);
+    if (!first) return;
+    const node = scroller.current;
+    const before = node ? node.scrollHeight - node.scrollTop : 0;
+    stickRef.current = false;
+    const page = await api.messages(activeId, { beforeSeq: first.seq, limit: 50 });
+    setMessages((prev) => mergeMessages(prev, page.messages));
+    setHasMore(page.hasMore);
+    requestAnimationFrame(() => {
+      if (node) node.scrollTop = node.scrollHeight - before;
     });
-    setShowGroup(false);
-    setGroupTitle("");
-    setGroupMembers([]);
-    setActiveId(data.conversationId);
-    await loadInbox();
   }
+
+  async function recall(id: string) {
+    try {
+      const data = await api.recall(id);
+      setMessages((prev) => mergeMessages(prev, [data.message]));
+    } catch (error) {
+      flash(describe(error));
+    }
+  }
+
+  async function act(fn: () => Promise<unknown>, after?: () => void) {
+    try {
+      await fn();
+      after?.();
+      await Promise.all([loadContacts(), loadInbox()]);
+      if (profileSub) await loadRelationship(profileSub);
+    } catch (error) {
+      flash(describe(error));
+    }
+  }
+
+  const relationBanner: MessageKey | null =
+    active && !active.canSend ? (active.relation === "blocked_by_me" ? "blockedBanner" : active.kind === "DIRECT" ? "notFriendBanner" : "cannotSendHere") : null;
 
   return (
-    <div className={`shell${activeId ? " thread-open" : ""}${showProfile ? " show-profile" : ""}`}>
+    <div className={`shell tab-${tab}${activeId && tab === "chats" ? " thread-open" : ""}${showProfile ? " show-profile" : ""}`}>
       <aside className="pane list-pane">
         <div className="pane-head">
           <Link href="/" className="wordmark">
             <span className="mark">KK</span>
             <strong>KKChat</strong>
           </Link>
-          {unreadTotal > 0 ? <span className="badge">{unreadTotal > 99 ? "99+" : unreadTotal}</span> : null}
+          <nav className="tabs" aria-label="KKChat">
+            {(["chats", "contacts", "me"] as const).map((item) => (
+              <button key={item} type="button" className={tab === item ? "on" : ""} onClick={() => setTab(item)}>
+                {t(item === "chats" ? "tabChats" : item === "contacts" ? "tabContacts" : "tabMe")}
+                {item === "chats" && unreadTotal > 0 ? <span className="badge">{unreadTotal > 99 ? "99+" : unreadTotal}</span> : null}
+                {item === "contacts" && requests.incoming.length > 0 ? <span className="badge">{requests.incoming.length}</span> : null}
+              </button>
+            ))}
+          </nav>
         </div>
-        <form
-          className="search"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void search(query);
-          }}
-        >
-          <input
-            value={query}
-            placeholder="KK 号、账号或姓名"
-            aria-label="查找用户"
-            onChange={(event) => void search(event.target.value)}
-          />
-        </form>
-        {searchError ? <p className="muted" style={{ padding: "0 16px" }}>{searchError}</p> : null}
-        {hits.length > 0 ? (
-          <div className="results">
-            {hits.map((hit) => (
-              <button key={hit.sub} type="button" onClick={() => void openDirect(hit)}>
-                <b>{hit.name}</b>
-                <small className="muted"> {hit.kk_number ? `KK ${hit.kk_number}` : hit.username || ""}</small>
+        {connection !== "online" ? <p className="conn">{t(connection === "offline" ? "offlineBanner" : "reconnecting")}</p> : null}
+
+        {tab === "chats" ? (
+          <>
+            <div className="search">
+              <input value={chatFilter} placeholder={t("searchChats")} aria-label={t("searchChats")} onChange={(event) => setChatFilter(event.target.value)} />
+            </div>
+            <div className="list">
+              {filteredInbox.length === 0 ? <p className="empty">{t("noChats")}</p> : null}
+              {filteredInbox.map((item) => (
+                <button key={item.id} type="button" className={`conv${item.id === activeId ? " active" : ""}`} onClick={() => openConversation(item.id)}>
+                  <Avatar name={item.title} url={item.avatarUrl} />
+                  <span>
+                    <b>
+                      {item.title}
+                      {item.pinned ? <em className="tag">{t("pinned")}</em> : null}
+                      {item.sourceProduct !== "kkchat" ? <em className="tag">{t("fromProduct", { product: item.sourceProduct })}</em> : null}
+                    </b>
+                    <small>{item.lastMessagePreview || "…"}</small>
+                  </span>
+                  <span className="conv-meta">
+                    <small>{formatMessageTime(item.lastMessageAt, locale)}</small>
+                    {item.unreadCount > 0 ? <span className={`badge${item.muted ? " muted-badge" : ""}`}>{item.unreadCount}</span> : null}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </>
+        ) : null}
+
+        {tab === "contacts" ? (
+          <div className="list contacts">
+            <div className="row-actions">
+              <button className="btn btn-primary" type="button" onClick={() => setShowAdd(true)}>{t("addFriend")}</button>
+              <button className="btn btn-ghost" type="button" onClick={() => setShowQr(true)}>{t("myQr")}</button>
+            </div>
+            {requests.incoming.length > 0 ? <h3>{t("incomingRequests")}</h3> : null}
+            {requests.incoming.map((request) => (
+              <div className="req" key={request.id}>
+                <button type="button" className="req-who" onClick={() => void openProfile(request.peer.accountSub)}>
+                  <Avatar name={request.peer.displayName} url={request.peer.avatarUrl} />
+                  <span>
+                    <b>{request.peer.displayName}</b>
+                    <small>{request.message || peerLine(request.peer, t)}</small>
+                  </span>
+                </button>
+                <div className="req-actions">
+                  <button className="btn btn-primary" type="button" onClick={() => void act(() => api.respond(request.id, "accept"))}>{t("accept")}</button>
+                  <button className="btn btn-ghost" type="button" onClick={() => void act(() => api.respond(request.id, "reject"))}>{t("reject")}</button>
+                </div>
+              </div>
+            ))}
+            {requests.outgoing.length > 0 ? <h3>{t("outgoingRequests")}</h3> : null}
+            {requests.outgoing.map((request) => (
+              <div className="req" key={request.id}>
+                <button type="button" className="req-who" onClick={() => void openProfile(request.peer.accountSub)}>
+                  <Avatar name={request.peer.displayName} url={request.peer.avatarUrl} />
+                  <span>
+                    <b>{request.peer.displayName}</b>
+                    <small>{t("requestSent")}</small>
+                  </span>
+                </button>
+                <div className="req-actions">
+                  <button className="btn btn-ghost" type="button" onClick={() => void act(() => api.respond(request.id, "cancel"))}>{t("withdraw")}</button>
+                </div>
+              </div>
+            ))}
+            <h3>{t("friends")}</h3>
+            <div className="search flush">
+              <input value={friendFilter} placeholder={t("filterFriends")} aria-label={t("filterFriends")} onChange={(event) => setFriendFilter(event.target.value)} />
+            </div>
+            {filteredFriends.length === 0 ? <p className="empty">{t("noFriends")}</p> : null}
+            {filteredFriends.map((friend) => (
+              <button key={friend.peer.accountSub} type="button" className="conv" onClick={() => void openProfile(friend.peer.accountSub)}>
+                <Avatar name={friend.remark || friend.peer.displayName} url={friend.peer.avatarUrl} />
+                <span>
+                  <b>{friend.remark || friend.peer.displayName}</b>
+                  <small>{peerLine(friend.peer, t)}</small>
+                </span>
+                <span />
               </button>
             ))}
           </div>
         ) : null}
-        <div className="list">
-          {conversations.length === 0 ? <p className="empty">还没有会话。用 KK 号找人，发出第一句。</p> : null}
-          {conversations.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={`conv${item.id === activeId ? " active" : ""}`}
-              onClick={() => {
-                setActiveId(item.id);
-                setShowProfile(false);
-                window.history.replaceState(null, "", `/app/conversations/${item.id}`);
-              }}
-            >
-              <Avatar name={item.title} url={item.avatarUrl || item.peer?.avatarUrl || ""} />
-              <span>
-                <b>{item.title}</b>
-                <small>{item.lastMessagePreview || "还没有消息"}</small>
-              </span>
-              <span>
-                <small>{formatTime(item.lastMessageAt)}</small>
-                {item.unreadCount > 0 ? <span className="badge">{item.unreadCount}</span> : null}
-              </span>
-            </button>
-          ))}
-        </div>
-        <div className="pane-head">
-          <button className="text-btn" type="button" onClick={() => setShowGroup(true)}>新建群</button>
-          <Link className="text-btn" href="/app/settings">我的</Link>
-        </div>
+
+        {tab === "me" ? <MePanel me={me} moderator={moderator} onShowQr={() => setShowQr(true)} onChanged={() => void act(async () => undefined)} /> : null}
       </aside>
+
       <section className="pane thread">
-        {active ? (
+        {active && tab === "chats" ? (
           <>
             <div className="pane-head">
-              <button className="text-btn back-link" type="button" onClick={() => setActiveId("")}>返回</button>
-              <div>
+              <button className="text-btn back-link" type="button" onClick={() => setActiveId("")}>{t("back")}</button>
+              <div className="thread-title">
                 <b>{active.title}</b>
-                <div className="muted">{active.peer?.kkNumber ? `KK ${active.peer.kkNumber}` : active.kind === "GROUP" ? "群聊" : ""}</div>
+                <div className="muted">
+                  {active.kind === "DIRECT" ? peerLine(active.peer, t) : t("members", { count: participants.length })}
+                </div>
               </div>
-              <button className="text-btn" type="button" onClick={() => setShowProfile(true)}>资料</button>
+              <div className="head-actions">
+                <button className="text-btn" type="button" onClick={() => void api.setPrefs(active.id, { pinned: !active.pinned }).then(loadInbox)}>
+                  {t(active.pinned ? "unpin" : "pin")}
+                </button>
+                <button className="text-btn" type="button" onClick={() => void api.setPrefs(active.id, { muted: !active.muted }).then(loadInbox)}>
+                  {t(active.muted ? "unmute" : "mute")}
+                </button>
+                <button
+                  className="text-btn"
+                  type="button"
+                  onClick={() => {
+                    if (active.peer) void openProfile(active.peer.accountSub);
+                    else setShowProfile(true);
+                  }}
+                >
+                  {t("profile")}
+                </button>
+              </div>
             </div>
             <div
               className="messages"
@@ -325,25 +554,48 @@ export function ChatShell({ me, initialConversationId }: { me: CurrentUser; init
                 const node = event.currentTarget;
                 const near = node.scrollHeight - node.scrollTop - node.clientHeight < 80;
                 stickRef.current = near;
-                setStick(near);
-                if (near) setUnseen(0);
+                if (near && unseen > 0) {
+                  setUnseen(0);
+                  const last = messages.filter((item) => !item.localStatus).at(-1);
+                  if (last) void api.markRead(active.id, last.seq).catch(() => undefined);
+                }
               }}
             >
+              {hasMore ? (
+                <button className="jump subtle" type="button" onClick={() => void loadEarlier()}>{t("loadEarlier")}</button>
+              ) : messages.length > 30 ? (
+                <p className="muted center">{t("noMoreMessages")}</p>
+              ) : null}
               {messages.map((message) => {
                 const mine = message.senderSub === me.accountSub;
-                const fresh = !message.recalledAt && now - Date.parse(message.createdAt) < 2 * 60 * 1000;
+                const sender = participants.find((item) => item.accountSub === message.senderSub);
+                const fresh = !message.recalledAt && Date.now() - Date.parse(message.createdAt) < 2 * 60 * 1000;
                 return (
                   <article key={message.id} className={`msg${mine ? " mine" : " theirs"}`}>
-                    <Avatar name={mine ? me.displayName : active.title} url={mine ? me.avatarUrl : active.avatarUrl} />
+                    <Avatar name={mine ? me.displayName : sender?.displayName || active.title} url={mine ? me.avatarUrl : sender?.avatarUrl || ""} />
                     <div className="bubble-wrap">
-                      <div className="bubble">{message.recalledAt ? "已撤回一条消息" : message.body}</div>
+                      {!mine && active.kind !== "DIRECT" ? <small className="muted">{sender?.displayName || "…"}</small> : null}
+                      <MessageBody message={message} />
                       <div className="meta">
-                        <span>{formatTime(message.createdAt)}</span>
-                        {message.localStatus === "sending" ? <span>发送中</span> : null}
-                        {message.localStatus === "failed" ? <span>失败</span> : null}
-                        {mine && !message.localStatus && !message.recalledAt ? <span>{message.read ? "已读" : "未读"}</span> : null}
-                        {mine && fresh && !message.recalledAt && !message.id.startsWith("local-") ? (
-                          <button className="text-btn" type="button" onClick={() => void recall(message.id)}>撤回</button>
+                        <span>{formatMessageTime(message.createdAt, locale)}</span>
+                        {message.localStatus === "sending" ? <span>{t("sending")}</span> : null}
+                        {message.localStatus === "failed" ? (
+                          <button className="link-btn danger" type="button" title={message.localError} onClick={() => void retry(message)}>
+                            {t("failed")} · {t("tapToRetry")}
+                          </button>
+                        ) : null}
+                        {mine && !message.localStatus && !message.recalledAt && active.kind === "DIRECT" ? <span>{t(message.read ? "read" : "unread")}</span> : null}
+                        {mine && fresh && !message.localStatus ? (
+                          <button className="link-btn" type="button" onClick={() => void recall(message.id)}>{t("recall")}</button>
+                        ) : null}
+                        {!mine && !message.recalledAt && !message.localStatus ? (
+                          <button
+                            className="link-btn"
+                            type="button"
+                            onClick={() => setReportTarget({ targetSub: message.senderSub, messageId: message.id, name: sender?.displayName || active.title })}
+                          >
+                            {t("report")}
+                          </button>
                         ) : null}
                       </div>
                     </div>
@@ -356,106 +608,248 @@ export function ChatShell({ me, initialConversationId }: { me: CurrentUser; init
                   type="button"
                   onClick={() => {
                     stickRef.current = true;
-                    setStick(true);
                     setUnseen(0);
+                    const node = scroller.current;
+                    if (node) node.scrollTop = node.scrollHeight;
                   }}
                 >
-                  {unseen} 条新消息
+                  {t("newMessages", { count: unseen })}
                 </button>
               ) : null}
             </div>
-            <form
-              className="composer"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void send();
-              }}
-            >
-              <textarea
-                value={draft}
-                aria-label="输入消息"
-                placeholder="写一条消息"
-                rows={1}
-                onChange={(event) => setDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key !== "Enter" || event.shiftKey) return;
-                  if (window.matchMedia("(max-width: 800px)").matches) return;
+            {relationBanner ? (
+              <div className="banner">
+                <span>{t(relationBanner)}</span>
+                {active.peer && active.relation === "not_friends" ? (
+                  <button className="btn btn-ghost" type="button" onClick={() => void openProfile(active.peer!.accountSub)}>{t("addFriend")}</button>
+                ) : null}
+              </div>
+            ) : (
+              <form
+                className="composer"
+                onSubmit={(event) => {
                   event.preventDefault();
-                  void send();
+                  void sendText();
                 }}
-              />
-              <button className="btn btn-primary" type="submit">发送</button>
-            </form>
+              >
+                <input ref={imageInput} type="file" accept="image/jpeg,image/png,image/gif,image/webp" hidden onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = "";
+                  if (file) void sendFile(file, "image");
+                }} />
+                <input ref={fileInput} type="file" hidden onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = "";
+                  if (file) void sendFile(file, "file");
+                }} />
+                <button className="icon-btn" type="button" aria-label={t("photo")} title={t("photo")} onClick={() => imageInput.current?.click()}>🖼</button>
+                <button className="icon-btn" type="button" aria-label={t("file")} title={t("file")} onClick={() => fileInput.current?.click()}>📎</button>
+                <textarea
+                  value={draft}
+                  aria-label={t("typeMessage")}
+                  placeholder={t("typeMessage")}
+                  rows={1}
+                  onChange={(event) => setDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+                    if (window.matchMedia("(max-width: 800px)").matches) return;
+                    event.preventDefault();
+                    void sendText();
+                  }}
+                />
+                <button className="btn btn-primary" type="submit">{t("send")}</button>
+              </form>
+            )}
           </>
         ) : (
           <div className="empty">
-            <p>选一个会话，或用 KK 号开始私聊。</p>
+            <p>{t("tagline")}</p>
           </div>
         )}
       </section>
+
       <aside className="pane profile-pane">
         <div className="profile-head">
-          <button className="text-btn back-link" type="button" onClick={() => setShowProfile(false)}>返回</button>
-          <b>会话资料</b>
+          <button className="text-btn back-link always" type="button" onClick={() => { setShowProfile(false); setProfileSub(null); }}>{t("back")}</button>
+          <b>{t("profile")}</b>
         </div>
         <div className="profile">
-          {active?.peer ? (
-            <>
-              <Avatar name={active.peer.displayName} url={active.peer.avatarUrl} large />
-              <b>{active.peer.displayName}</b>
-              <div className="kk">{active.peer.kkNumber ? active.peer.kkNumber : "—"}</div>
-              <p className="muted">KK 号</p>
-              <p>{active.peer.username ? `账号 ${active.peer.username}` : "还没有自设账号"}</p>
-            </>
-          ) : active ? (
+          {profileSub && relationship ? (
+            <ProfileCard
+              key={relationship.peer.accountSub}
+              relationship={relationship}
+              onMessage={() => void startChat(relationship.peer.accountSub)}
+              onRequest={(message) =>
+                void act(() => api.sendRequest({ addresseeSub: relationship.peer.accountSub, message, source: "profile", clientRequestId: newClientId() }))
+              }
+              onAccept={() => relationship.incoming && void act(() => api.respond(relationship.incoming!.id, "accept"))}
+              onReject={() => relationship.incoming && void act(() => api.respond(relationship.incoming!.id, "reject"))}
+              onWithdraw={() => relationship.outgoing && void act(() => api.respond(relationship.outgoing!.id, "cancel"))}
+              onRemark={(remark) => void act(() => api.setRemark(relationship.peer.accountSub, remark))}
+              onDelete={() => {
+                if (window.confirm(t("deleteFriendConfirm"))) void act(() => api.removeFriend(relationship.peer.accountSub));
+              }}
+              onBlock={() => {
+                if (window.confirm(t("blockConfirm"))) void act(() => api.block(relationship.peer.accountSub));
+              }}
+              onUnblock={() => void act(() => api.unblock(relationship.peer.accountSub))}
+              onReport={() => setReportTarget({ targetSub: relationship.peer.accountSub, name: relationship.peer.displayName, conversationId: relationship.conversationId || undefined })}
+            />
+          ) : active && active.kind !== "DIRECT" ? (
             <>
               <b>{active.title}</b>
-              <p className="muted">群聊骨架已经能收发文本。复杂的群管理以后再加。</p>
-            </>
-          ) : (
-            <p className="muted">打开会话后，这里显示对方的 KK 号。</p>
-          )}
-          <p><Link href="/app/settings">我的 KK 号与账号标识</Link></p>
-        </div>
-      </aside>
-      {showGroup ? (
-        <div className="modal">
-          <form
-            className="modal-card"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void createGroup();
-            }}
-          >
-            <h2>新建群</h2>
-            <input value={groupTitle} placeholder="群名称" aria-label="群名称" onChange={(event) => setGroupTitle(event.target.value)} />
-            <p className="muted">先在左侧搜到人，再点下面把他们加进这个群。</p>
-            <div>
-              {hits.map((hit) => (
-                <button
-                  className="member-row"
-                  type="button"
-                  key={hit.sub}
-                  onClick={() => setGroupMembers((prev) => (prev.some((item) => item.sub === hit.sub) ? prev : [...prev, hit]))}
-                >
-                  加入 {hit.name}
+              <p className="muted">{t("members", { count: participants.length })}</p>
+              {participants.map((member) => (
+                <button key={member.accountSub} type="button" className="conv" onClick={() => member.accountSub !== me.accountSub && void openProfile(member.accountSub)}>
+                  <Avatar name={member.displayName} url={member.avatarUrl} />
+                  <span>
+                    <b>{member.displayName}</b>
+                    <small>{peerLine(member, t)}</small>
+                  </span>
+                  <span />
                 </button>
               ))}
-            </div>
-            <p>{groupMembers.map((item) => item.name).join("、") || "还没有成员"}</p>
-            <div className="actions">
-              <button className="btn btn-primary" type="submit">创建</button>
-              <button className="btn btn-ghost" type="button" onClick={() => setShowGroup(false)}>取消</button>
-            </div>
-          </form>
+            </>
+          ) : (
+            <p className="muted">{t("loading")}</p>
+          )}
         </div>
+      </aside>
+
+      {showAdd ? (
+        <AddFriendModal
+          meName={me.displayName}
+          onClose={() => setShowAdd(false)}
+          onOpenProfile={(sub) => {
+            setShowAdd(false);
+            void openProfile(sub);
+          }}
+          onChanged={() => void act(async () => undefined)}
+        />
       ) : null}
+      {showQr ? <QrModal onClose={() => setShowQr(false)} /> : null}
+      {reportTarget ? <ReportModal target={reportTarget} onClose={() => setReportTarget(null)} onDone={() => flash(t("reportSubmitted"))} /> : null}
+      {toast ? <div className="toast" role="status">{toast}</div> : null}
     </div>
   );
 }
 
-function Avatar({ name, url, large = false }: { name: string; url: string; large?: boolean }) {
-  const letter = (name || "?").slice(0, 1);
+function peerLine(peer: PublicUser | null, t: (key: MessageKey, vars?: Record<string, string | number>) => string) {
+  if (!peer) return "";
+  const parts = [];
+  if (peer.kkNumber) parts.push(`${t("kkNumber")} ${peer.kkNumber}`);
+  if (peer.username) parts.push(`@${peer.username}`);
+  return parts.join(" · ");
+}
+
+function MessageBody({ message }: { message: LocalMessage }) {
+  const { t } = useI18n();
+  if (message.recalledAt) return <div className="bubble recalled">{t("recalled")}</div>;
+  if (message.type === "IMAGE" && message.attachment) {
+    const url = `/api/attachments/${encodeURIComponent(message.attachment.id)}`;
+    return (
+      <a className="bubble media" href={url} target="_blank" rel="noopener noreferrer">
+        {/* 私有附件经过会话成员校验返回，不能交给构建期图片优化。 */}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={url} alt={message.attachment.name} loading="lazy" />
+      </a>
+    );
+  }
+  if (message.type === "FILE" && message.attachment) {
+    const url = `/api/attachments/${encodeURIComponent(message.attachment.id)}`;
+    return (
+      <a className="bubble file" href={url} rel="noopener noreferrer">
+        📄 {message.attachment.name} <small>{formatSize(message.attachment.size)}</small>
+      </a>
+    );
+  }
+  if ((message.type === "IMAGE" || message.type === "FILE") && message.localStatus) {
+    return <div className="bubble">{message.type === "IMAGE" ? "🖼" : "📄"} {message.body}</div>;
+  }
+  if (message.type === "ACTION_CARD" || message.type === "SYSTEM") return <div className="bubble system">{message.body}</div>;
+  return <div className="bubble">{message.body}</div>;
+}
+
+function formatSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function ProfileCard(props: {
+  relationship: Relationship;
+  onMessage: () => void;
+  onRequest: (message: string) => void;
+  onAccept: () => void;
+  onReject: () => void;
+  onWithdraw: () => void;
+  onRemark: (remark: string) => void;
+  onDelete: () => void;
+  onBlock: () => void;
+  onUnblock: () => void;
+  onReport: () => void;
+}) {
+  const { t } = useI18n();
+  const { relationship: rel } = props;
+  const [note, setNote] = useState("");
+  const [remark, setRemark] = useState(rel.remark);
+  return (
+    <>
+      <Avatar name={rel.peer.displayName} url={rel.peer.avatarUrl} large />
+      <b>{rel.remark || rel.peer.displayName}</b>
+      {rel.remark ? <p className="muted">{rel.peer.displayName}</p> : null}
+      <div className="kk">{rel.peer.kkNumber ?? "—"}</div>
+      <p className="muted">{t("kkNumber")}</p>
+      <p>{rel.peer.username ? `${t("username")} @${rel.peer.username}` : t("noUsername")}</p>
+      {rel.isSelf ? null : (
+        <div className="stack">
+          {rel.friend ? (
+            <>
+              <p className="ok">{t("alreadyFriends")}</p>
+              <button className="btn btn-primary" type="button" onClick={props.onMessage}>{t("message")}</button>
+              <label className="field">
+                <span>{t("remark")}</span>
+                <input value={remark} placeholder={t("remarkPlaceholder")} maxLength={40} onChange={(event) => setRemark(event.target.value)} />
+              </label>
+              <button className="btn btn-ghost" type="button" onClick={() => props.onRemark(remark)}>{t("setRemark")}</button>
+              <button className="btn btn-ghost danger" type="button" onClick={props.onDelete}>{t("deleteFriend")}</button>
+            </>
+          ) : rel.incoming ? (
+            <>
+              <p>{t("requestIncoming")}</p>
+              {rel.incoming.message ? <blockquote>{rel.incoming.message}</blockquote> : null}
+              <button className="btn btn-primary" type="button" onClick={props.onAccept}>{t("accept")}</button>
+              <button className="btn btn-ghost" type="button" onClick={props.onReject}>{t("reject")}</button>
+            </>
+          ) : rel.outgoing ? (
+            <>
+              <p>{t("requestSent")}</p>
+              <button className="btn btn-ghost" type="button" onClick={props.onWithdraw}>{t("withdraw")}</button>
+            </>
+          ) : rel.blockedByMe ? null : (
+            <>
+              <label className="field">
+                <span>{t("requestMessage")}</span>
+                <input value={note} maxLength={120} onChange={(event) => setNote(event.target.value)} />
+              </label>
+              <button className="btn btn-primary" type="button" onClick={() => props.onRequest(note)}>{t("sendRequest")}</button>
+            </>
+          )}
+          {!rel.friend && rel.canMessage ? <button className="btn btn-ghost" type="button" onClick={props.onMessage}>{t("message")}</button> : null}
+          {rel.blockedByMe ? (
+            <button className="btn btn-ghost" type="button" onClick={props.onUnblock}>{t("unblock")}</button>
+          ) : (
+            <button className="btn btn-ghost danger" type="button" onClick={props.onBlock}>{t("block")}</button>
+          )}
+          <button className="btn btn-ghost" type="button" onClick={props.onReport}>{t("report")}</button>
+        </div>
+      )}
+    </>
+  );
+}
+
+export function Avatar({ name, url, large = false }: { name: string; url: string; large?: boolean }) {
+  const letter = Array.from(name || "?")[0];
   return (
     <span className={large ? "avatar-lg" : "avatar"}>
       {url ? (
@@ -467,55 +861,4 @@ function Avatar({ name, url, large = false }: { name: string; url: string; large
       )}
     </span>
   );
-}
-
-function formatTime(value: string | null) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai",
-    hour: "2-digit",
-    minute: "2-digit",
-    month: "numeric",
-    day: "numeric",
-  }).format(date);
-}
-
-function bumpConversation(prev: Conversation[], message: ChatMessage, activeId: string, meSub: string): Conversation[] {
-  const preview = message.recalledAt ? "已撤回" : (message.body || "").replace(/\s+/g, " ").slice(0, 80);
-  const existing = prev.find((item) => item.id === message.conversationId);
-  const next = existing
-    ? prev.map((item) =>
-        item.id === message.conversationId
-          ? {
-              ...item,
-              lastMessagePreview: preview,
-              lastMessageAt: message.createdAt,
-              unreadCount:
-                item.id === activeId || message.senderSub === meSub ? item.unreadCount : item.unreadCount + 1,
-            }
-          : item,
-      )
-    : prev;
-  return [...next].sort((a, b) => Date.parse(b.lastMessageAt || "") - Date.parse(a.lastMessageAt || ""));
-}
-
-async function api<T>(path: string, init: { method?: string; json?: unknown } = {}): Promise<T> {
-  const headers: Record<string, string> = {};
-  if (init.json !== undefined) headers["content-type"] = "application/json";
-  if (init.method && init.method !== "GET") headers["x-kkchat-csrf"] = readCsrf();
-  const response = await fetch(path, {
-    method: init.method || "GET",
-    headers,
-    body: init.json !== undefined ? JSON.stringify(init.json) : undefined,
-  });
-  const data = (await response.json().catch(() => ({}))) as T & { error?: string };
-  if (!response.ok) throw new Error(data.error || "请求失败");
-  return data;
-}
-
-function readCsrf() {
-  const match = document.cookie.match(/(?:^|; )kkchat_csrf=([^;]*)/);
-  return match ? decodeURIComponent(match[1]) : "";
 }
