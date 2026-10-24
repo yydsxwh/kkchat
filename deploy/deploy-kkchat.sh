@@ -81,7 +81,9 @@ remote "set -euo pipefail
   sudo pg_restore --list /var/backups/kkchat/kkchat-before-\$SHA-\$TS.dump | grep -c 'TABLE DATA' | xargs echo 'tables in backup:'
 
   echo '== migrate'
-  sudo bash -c 'set -a; . /etc/kkchat.env; set +a; cd /opt/kkchat/releases/$SHA && node node_modules/prisma/build/index.js migrate deploy --schema prisma/schema.prisma'
+  # 只取 DATABASE_URL，不 source 整个 env 文件（里面有带空格、未加引号的值）。
+  DBURL=\$(sudo grep -E '^DATABASE_URL=' /etc/kkchat.env | head -1 | cut -d= -f2- | sed -E 's/^\"(.*)\"\$/\\1/')
+  sudo env DATABASE_URL=\"\$DBURL\" bash -c 'cd /opt/kkchat/releases/$SHA && node node_modules/prisma/build/index.js migrate deploy --schema prisma/schema.prisma'
 
   echo '== switch'
   cur=\$(systemctl show kkchat.service -p WorkingDirectory --value | xargs basename)

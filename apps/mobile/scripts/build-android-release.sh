@@ -5,7 +5,8 @@
 #   KKCHAT_VERSION_CODE           本次 versionCode，必须大于线上版本
 #   ANDROID_KEYSTORE_BASE64       正式 keystore（base64），或直接给 KKCHAT_UPLOAD_STORE_FILE
 #   ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_PASSWORD / ANDROID_KEY_ALIAS
-# 可选：KKCHAT_API_BASE_URL（默认 https://kkchat.yydsxwh.com）、ANDROID_HOME
+# 可选：KKCHAT_API_BASE_URL（默认 https://kkchat.yydsxwh.com）、ANDROID_HOME、
+#       KKCHAT_ANDROID_ABIS（默认 arm64-v8a,armeabi-v7a：真实手机与 Surface Duo 都是 ARM，省掉 x86 让安装包小一半）
 #
 # 输出 release/ 下的 apk、aab 与 release.json（版本、大小、SHA-256、证书指纹、提交）。
 set -euo pipefail
@@ -32,7 +33,8 @@ export KKCHAT_UPLOAD_KEY_PASSWORD="${KKCHAT_UPLOAD_KEY_PASSWORD:-${ANDROID_KEY_P
 export KKCHAT_UPLOAD_KEY_ALIAS="${KKCHAT_UPLOAD_KEY_ALIAS:-${ANDROID_KEY_ALIAS:?}}"
 
 CI=1 npx expo prebuild --platform android --clean --no-install
-(cd android && ./gradlew --no-daemon -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g" assembleRelease bundleRelease)
+ABIS="${KKCHAT_ANDROID_ABIS:-arm64-v8a,armeabi-v7a}"
+(cd android && ./gradlew --no-daemon -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g" -PreactNativeArchitectures="$ABIS" assembleRelease bundleRelease)
 
 version="$(node -p "require('./package.json').version")"
 mkdir -p release
