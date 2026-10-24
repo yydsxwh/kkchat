@@ -43,6 +43,8 @@ STAGE="$(mktemp -d)"
 REL="$STAGE/$SHA"
 mkdir -p "$REL"
 cp -a .next/standalone/. "$REL/"
+# standalone 会把构建机的 .env 一起带上；生产只认 /etc/kkchat.env。
+rm -f "$REL"/.env "$REL"/.env.*
 mkdir -p "$REL/.next"
 cp -a .next/static "$REL/.next/static"
 cp -a prisma "$REL/prisma"
@@ -55,6 +57,9 @@ cp -a node_modules/@prisma/debug "$REL/node_modules/@prisma/debug" 2>/dev/null |
 cp -a node_modules/@prisma/get-platform "$REL/node_modules/@prisma/get-platform" 2>/dev/null || true
 cp -a node_modules/@prisma/fetch-engine "$REL/node_modules/@prisma/fetch-engine" 2>/dev/null || true
 echo "$(git rev-parse HEAD)" > "$REL/RELEASE_SHA"
+# Next 写出的 standalone 目录是 700、server.js 是 600。版本目录里没有密钥，统一成可读，
+# 否则下次发布时 rsync --copy-dest 读不了线上版本，只能整包重传。
+chmod -R u+rwX,go+rX,go-w "$REL"
 
 # 到吉隆坡的上行很慢：用 rsync --copy-dest 对比线上当前版本，内容相同的文件（Next 运行时、sharp、Prisma 引擎）
 # 在服务器上本地复制，只传真正变化的文件。
@@ -88,10 +93,14 @@ remote "set -euo pipefail
   echo '== switch'
   cur=\$(systemctl show kkchat.service -p WorkingDirectory --value | xargs basename)
   echo \"\$cur\" | sudo tee /opt/kkchat/PREVIOUS_RELEASE >/dev/null
-  grep -q '^KKCHAT_RELEASE_SHA=' /etc/kkchat.env && sudo sed -i \"s#^KKCHAT_RELEASE_SHA=.*#KKCHAT_RELEASE_SHA=\$SHA#\" /etc/kkchat.env || echo \"KKCHAT_RELEASE_SHA=\$SHA\" | sudo tee -a /etc/kkchat.env >/dev/null
-  grep -q '^KKCHAT_ATTACHMENT_DIR=' /etc/kkchat.env || echo 'KKCHAT_ATTACHMENT_DIR=/var/lib/kkchat/attachments' | sudo tee -a /etc/kkchat.env >/dev/null
-  grep -q '^ReadWritePaths=' /etc/systemd/system/kkchat.service || sudo sed -i 's#^PrivateTmp=true#PrivateTmp=true\nReadWritePaths=/var/lib/kkchat#' /etc/systemd/system/kkchat.service
-  sudo sed -i \"s#^WorkingDirectory=.*#WorkingDirectory=/opt/kkchat/releases/\$SHA#\" /etc/systemd/system/kkchat.service
+  # /etc/kkchat.env 是 640 root:kkchat，读也要 sudo；否则 grep 失败会每次追加一行重复配置。
+  if sudo grep -q '^KKCHAT_RELEASE_SHA=' /etc/kkchat.env; then
+    sudo sed -i \"s#^KKCHAT_RELEASE_SHA=.*#KKCHAT_RELEASE_SHA=\$SHA#\" /etc/kkchat.env
+  else
+    echo \"KKCHAT_RELEASE_SHA=\$SHA\" | sudo tee -a /etc/kkchat.env >/dev/null
+  fi
+  sudo grep -q '^KKCHAT_ATTACHMENT_DIR=' /etc/kkchat.env || echo 'KKCHAT_ATTACHMENT_DIR=/var/lib/kkchat/attachments' | sudo tee -a /etc/kkchat.env >/dev/null
+  sudo grep -q '^ReadWritePaths=' /etc/systemd/system/kkchat.service || sudo sed -i 's#^PrivateTmp=true#PrivateTmp=true\nReadWritePaths=/var/lib/kkchat#' /etc/systemd/system/kkchat.service  sudo sed -i \"s#^WorkingDirectory=.*#WorkingDirectory=/opt/kkchat/releases/\$SHA#\" /etc/systemd/system/kkchat.service
   sudo systemctl daemon-reload
   sudo systemctl restart kkchat.service
   for i in 1 2 3 4 5 6 7 8 9 10; do
