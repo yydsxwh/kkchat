@@ -1,2 +1,0 @@
-expo.modules.kkchatnative
-xml kkchat_update_paths

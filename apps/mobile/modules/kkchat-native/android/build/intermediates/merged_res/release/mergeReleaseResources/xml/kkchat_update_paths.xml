@@ -1,5 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<paths>
-  <!-- 只暴露缓存里的 updates 目录，不暴露其他文件。 -->
-  <cache-path name="kkchat_updates" path="updates/" />
-</paths>
