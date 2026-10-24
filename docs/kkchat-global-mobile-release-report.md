@@ -58,7 +58,7 @@
 
 | 仓库 | 分支 | 最新提交 | PR | 生产 |
 |---|---|---|---|---|
-| kkchat | `cursor/kkchat-global-friends-mobile-6046` | 本报告所在提交 | <https://github.com/yydsxwh/kkchat/pull/5> | `fcd8952`（含本报告之前的全部代码） |
+| kkchat | `cursor/kkchat-global-friends-mobile-6046` | 本报告所在提交 | <https://github.com/yydsxwh/kkchat/pull/5> | `ceba2ff`（除本报告外的全部代码） |
 | account | `cursor/kkchat-native-clients-6046` | `7123036` | <https://github.com/yydsxwh/account/pull/31> | `7123036` |
 | platform | `cursor/kkchat-installers-6046` | `5a22852` | <https://github.com/yydsxwh/platform/pull/20> | `5a22852` |
 | Andyyyds | `cursor/kkchat-product-center-6046`（基于 `Andyyyds20260901independentpackage`） | `0bdfb2c` | <https://github.com/yydsxwh/Andyyyds/pull/81> | `0bdfb2c49601` |
@@ -112,6 +112,7 @@
 | 10-25 00:20 | 主站 | `79b5a152db5c`（`3686fed59ecb`） | `/var/backups/yyds/main-before-79b5a152db5c-20261024T161947Z.db` | `infra/deploy/ship-main-release.sh --rollback` |
 | 10-25 01:35 / 01:45 / 01:49 | KKChat | `89af5bf` → `6909542` → `fcd8952`（网页修正、退出修正、帮助链接） | 每次 `kkchat-before-<sha>-<UTC>.dump` | 同上 |
 | 10-25 01:52 | 主站 | `0bdfb2c49601`（`79b5a152db5c`） | `/var/backups/yyds/main-before-0bdfb2c49601-*.db` | 同上 |
+| 10-25 01:57 | KKChat | `ceba2ff`（`fcd8952`，联系人申请行布局） | `/var/backups/kkchat/kkchat-before-ceba2ff-20261024T175718Z.dump` | `deploy/deploy-kkchat.sh --rollback` |
 
 账号中心在 23:38 之后用登记脚本建了 `kkchat-android`、`kkchat-ios` 两个 public client。
 
@@ -130,7 +131,7 @@
 - **重启要等 90 秒**：Next 收到 SIGTERM 后等所有连接结束，SSE 不会自己结束，systemd 等满 90 秒才 SIGKILL，期间所有请求失败——之前每次发布都有这段空窗。现在实时层在退出时主动结束 SSE（客户端 3 秒后重连并按 seq 补拉），8 秒后仍未退出就强制退出，unit 的停止超时设为 20 秒兜底。生产实测：`systemctl restart` 0.04 秒返回，0.57 秒后探活就绪。
 - **发布脚本**：standalone 产物会带上构建机的 `.env`，现在发布前删掉（生产只读 `/etc/kkchat.env`，三项关键配置在生产都有，Cookie 一直是 `Secure`）；`/etc/kkchat.env` 是 `640 root:kkchat`，脚本原来不带 sudo 去 grep，失败后每次追加一行重复配置——已改为 sudo，并把生产上重复的两行去重（去重前备份 `/var/backups/kkchat/kkchat.env.before-dedupe-*`）；版本目录统一为可读，下次 rsync 能复用线上文件，只传变化的部分；切换后必须看到 unit 指向新版本、探活返回新版本号，才算成功。
 - **备份权限**：Account 与主站的 SQLite 备份原来是 `644`，已改成 `600`，脚本改为先建 `600` 空文件再写入。
-- **网页**：桌面宽度下中文导航被挤成一字一行、英文导航压到会话标题上；右侧资料栏在没点资料时一直显示「加载中」；标记已读失败会把会话关掉。都已修复并上线。
+- **网页**：桌面宽度下中文导航被挤成一字一行、英文导航压到会话标题上；右侧资料栏在没点资料时一直显示「加载中」；标记已读失败会把会话关掉；联系人页的好友申请行被「同意 / 拒绝」挤到只剩 50–95px，名字断成两三行。都已修复并上线（KKChat `ceba2ff`）。
 
 ## 9. Android
 
