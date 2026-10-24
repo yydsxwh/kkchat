@@ -100,12 +100,15 @@ remote "set -euo pipefail
     echo \"KKCHAT_RELEASE_SHA=\$SHA\" | sudo tee -a /etc/kkchat.env >/dev/null
   fi
   sudo grep -q '^KKCHAT_ATTACHMENT_DIR=' /etc/kkchat.env || echo 'KKCHAT_ATTACHMENT_DIR=/var/lib/kkchat/attachments' | sudo tee -a /etc/kkchat.env >/dev/null
-  sudo grep -q '^ReadWritePaths=' /etc/systemd/system/kkchat.service || sudo sed -i 's#^PrivateTmp=true#PrivateTmp=true\nReadWritePaths=/var/lib/kkchat#' /etc/systemd/system/kkchat.service  sudo sed -i \"s#^WorkingDirectory=.*#WorkingDirectory=/opt/kkchat/releases/\$SHA#\" /etc/systemd/system/kkchat.service
+  sudo grep -q '^ReadWritePaths=' /etc/systemd/system/kkchat.service || sudo sed -i 's#^PrivateTmp=true#PrivateTmp=true\nReadWritePaths=/var/lib/kkchat#' /etc/systemd/system/kkchat.service
+  sudo grep -q '^TimeoutStopSec=' /etc/systemd/system/kkchat.service || sudo sed -i 's#^RestartSec=\(.*\)#RestartSec=\1\nTimeoutStopSec=20#' /etc/systemd/system/kkchat.service
+  sudo sed -i \"s#^WorkingDirectory=.*#WorkingDirectory=/opt/kkchat/releases/\$SHA#\" /etc/systemd/system/kkchat.service
+  sudo grep -q \"^WorkingDirectory=/opt/kkchat/releases/\$SHA\$\" /etc/systemd/system/kkchat.service || { echo 'WorkingDirectory 没有切到新版本' >&2; exit 1; }
   sudo systemctl daemon-reload
   sudo systemctl restart kkchat.service
   for i in 1 2 3 4 5 6 7 8 9 10; do
     sleep 2
-    if curl -fsS --max-time 5 'http://127.0.0.1:3210/api/health?ready=1' >/tmp/kkchat-health.json 2>/dev/null; then
+    if curl -fsS --max-time 5 'http://127.0.0.1:3210/api/health?ready=1' >/tmp/kkchat-health.json 2>/dev/null && grep -q \"release.:.\$SHA\" /tmp/kkchat-health.json; then
       cat /tmp/kkchat-health.json; echo; echo \"deployed \$SHA (previous \$cur)\"; exit 0
     fi
   done
