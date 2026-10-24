@@ -50,7 +50,7 @@ sha="$(sha256sum "$apk" | awk '{print $1}')"
 size="$(stat -c %s "$apk")"
 min_sdk="$("$build_tools/aapt2" dump badging "$apk" | sed -n "s/.*minSdkVersion:'\([0-9]*\)'.*/\1/p" | head -1)"
 node -e '
-const [version, code, file, size, sha, cert, minSdk, commit] = process.argv.slice(1);
-console.log(JSON.stringify({ version, versionCode: Number(code), file, sizeBytes: Number(size), sha256: sha, certSha256: cert, minSdk: Number(minSdk), commit, builtAt: new Date().toISOString() }, null, 2));
-' "$version" "$KKCHAT_VERSION_CODE" "$(basename "$apk")" "$size" "$sha" "$cert_sha" "$min_sdk" "$KKCHAT_RELEASE_COMMIT" > release/release.json
+const [version, code, file, size, sha, cert, minSdk, commit, abis] = process.argv.slice(1);
+console.log(JSON.stringify({ version, versionCode: Number(code), file, sizeBytes: Number(size), sha256: sha, certSha256: cert, minSdk: Number(minSdk), abis, commit, builtAt: new Date().toISOString() }, null, 2));
+' "$version" "$KKCHAT_VERSION_CODE" "$(basename "$apk")" "$size" "$sha" "$cert_sha" "$min_sdk" "$KKCHAT_RELEASE_COMMIT" "$ABIS" > release/release.json
 cat release/release.json
