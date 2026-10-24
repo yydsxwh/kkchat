@@ -17,6 +17,8 @@ Environment=KKCHAT_ATTACHMENT_DIR=/var/lib/kkchat/attachments
 ExecStart=/usr/bin/node server.js
 Restart=always
 RestartSec=3
+# 进程收到 SIGTERM 会先断开 SSE、最多再等 8 秒；这里是兜底，别回到默认的 90 秒。
+TimeoutStopSec=20
 NoNewPrivileges=true
 PrivateTmp=true
 ReadWritePaths=/var/lib/kkchat

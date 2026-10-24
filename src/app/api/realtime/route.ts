@@ -19,6 +19,7 @@ export async function GET(request: Request) {
   const ready = await latestSeq(prisma, actor.accountSub);
   let unsubscribe = () => {};
   let stopDisconnect = () => {};
+  let stopShutdown = () => {};
   let ping: ReturnType<typeof setInterval> | null = null;
   let revokeCheck: ReturnType<typeof setInterval> | null = null;
   let closed = false;
@@ -50,6 +51,7 @@ export async function GET(request: Request) {
         send(`event: session\ndata: {"action":"revoked"}\n\n`);
         close();
       });
+      stopShutdown = bus.onShutdown(close);
       send(`retry: 3000\nevent: ready\ndata: ${JSON.stringify({ latestSeq: ready })}\n\n`);
       ping = setInterval(() => send(`: ping\n\n`), 15_000);
       revokeCheck = setInterval(() => {
@@ -73,6 +75,7 @@ export async function GET(request: Request) {
   function cleanup() {
     unsubscribe();
     stopDisconnect();
+    stopShutdown();
     if (ping) clearInterval(ping);
     if (revokeCheck) clearInterval(revokeCheck);
     ping = null;

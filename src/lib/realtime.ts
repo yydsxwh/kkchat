@@ -27,6 +27,9 @@ export interface RealtimeBus {
   /** 让某个账号的连接立即断开，例如设备会话被撤销。 */
   disconnect(accountSub: string, sessionId: string): void;
   onDisconnect(accountSub: string, listener: (sessionId: string) => void): () => void;
+  /** 进程退出前结束所有长连接；客户端按 retry 重连到新进程，再按 seq 补拉。 */
+  shutdown(): void;
+  onShutdown(listener: () => void): () => void;
 }
 
 type Listener = (event: RealtimeEvent) => void;
@@ -35,6 +38,7 @@ type DisconnectListener = (sessionId: string) => void;
 export class MemoryRealtimeBus implements RealtimeBus {
   private readonly listeners = new Map<string, Set<Listener>>();
   private readonly disconnects = new Map<string, Set<DisconnectListener>>();
+  private readonly shutdownListeners = new Set<() => void>();
 
   publish(events: RealtimeEvent[]): void {
     for (const event of events) {
@@ -58,6 +62,23 @@ export class MemoryRealtimeBus implements RealtimeBus {
 
   onDisconnect(accountSub: string, listener: DisconnectListener): () => void {
     return add(this.disconnects, accountSub, listener);
+  }
+
+  shutdown(): void {
+    for (const listener of [...this.shutdownListeners]) {
+      try {
+        listener();
+      } catch {
+        // 某条连接已经断了，不影响其余连接收尾。
+      }
+    }
+  }
+
+  onShutdown(listener: () => void): () => void {
+    this.shutdownListeners.add(listener);
+    return () => {
+      this.shutdownListeners.delete(listener);
+    };
   }
 }
 

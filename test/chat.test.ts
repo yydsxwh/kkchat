@@ -343,6 +343,19 @@ test("实时事件只发给参与者", () => {
   assert.deepEqual(seen, ["b"]);
 });
 
+test("进程退出时结束所有还开着的实时连接，已关闭的不再通知", () => {
+  const bus = new MemoryRealtimeBus();
+  const closed: string[] = [];
+  bus.onShutdown(() => closed.push("b"));
+  const stopC = bus.onShutdown(() => closed.push("c"));
+  bus.onShutdown(() => {
+    throw new Error("连接已断");
+  });
+  stopC();
+  bus.shutdown();
+  assert.deepEqual(closed, ["b"]);
+});
+
 test.after(async () => {
   await db.$disconnect();
 });
