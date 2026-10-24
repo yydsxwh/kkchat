@@ -1,10 +1,10 @@
 import * as Notifications from "expo-notifications";
 import * as WebBrowser from "expo-web-browser";
 import { useEffect, useState } from "react";
-import { Alert, Linking, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Alert, ScrollView, StyleSheet, Text, View } from "react-native";
 import type { PrivacyView, PublicUser, ReportReason } from "@shared/types";
 import { useApp } from "../app-state";
-import { ACCOUNT_CENTER, APP_BUILD, APP_VERSION, PLATFORM, RELEASE_COMMIT, SUPPORT_EMAIL } from "../config";
+import { ACCOUNT_CENTER, APP_BUILD, APP_VERSION, PLATFORM, RELEASE_COMMIT, SUPPORT_URL } from "../config";
 import { useI18n } from "../i18n";
 import { useNav } from "../nav";
 import { readPrefs, writePrefs } from "../storage";
@@ -75,7 +75,7 @@ export function MeScreen() {
           </View>
           <Row title={t("devices")} onPress={() => nav.push({ name: "devices" })} />
           <Row title={`${t("version")} ${APP_VERSION} (${APP_BUILD})`} subtitle={t("checkUpdate")} onPress={() => nav.push({ name: "about" })} />
-          <Row title={t("help")} subtitle={SUPPORT_EMAIL} onPress={() => void Linking.openURL(`mailto:${SUPPORT_EMAIL}`)} />
+          <Row title={t("help")} subtitle="www.yydsxwh.com/contact" onPress={() => void WebBrowser.openBrowserAsync(SUPPORT_URL)} />
           <Row
             title={t("deleteAccount")}
             subtitle={t("openAccountCenter")}

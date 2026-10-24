@@ -8,6 +8,8 @@ import { useI18n } from "./i18n";
 import { LogoutButton } from "./logout-button";
 import { webClient as api } from "./web-client";
 
+const SUPPORT_URL = "https://www.yydsxwh.com/contact";
+
 const PRIVACY_KEYS: Array<{ key: keyof PrivacyView; label: "discoverByKk" | "discoverByUsername" | "discoverByName" | "allowRequests" | "hideContent" }> = [
   { key: "discoverByKkNumber", label: "discoverByKk" },
   { key: "discoverByUsername", label: "discoverByUsername" },
@@ -93,7 +95,10 @@ export function MePanel({ me, moderator, onShowQr, onChanged }: { me: CurrentUse
         <Link className="btn btn-ghost" href="/app/settings">{t("profile")}</Link>
         <a className="btn btn-ghost" href="https://account.yydsxwh.com/account/security" target="_blank" rel="noopener noreferrer">{t("deleteAccount")}</a>
         <p className="muted small">{t("deleteAccountBody")}</p>
-        <p className="muted small">{t("helpBody")}</p>
+        <p className="muted small">
+          {t("helpBody")}{" "}
+          <a href={SUPPORT_URL} target="_blank" rel="noopener noreferrer">www.yydsxwh.com/contact</a>
+        </p>
         <LogoutButton />
       </div>
     </div>

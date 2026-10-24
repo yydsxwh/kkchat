@@ -13,4 +13,4 @@ export const PLATFORM: "android" | "ios" = Platform.OS === "ios" ? "ios" : "andr
 export const APP_VERSION = Application.nativeApplicationVersion || "0.0.0";
 export const APP_BUILD = Number(Application.nativeBuildVersion || "0");
 export const ACCOUNT_CENTER = "https://account.yydsxwh.com";
-export const SUPPORT_EMAIL = "support@yydsxwh.com";
+export const SUPPORT_URL = "https://www.yydsxwh.com/contact";
