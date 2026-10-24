@@ -57,10 +57,17 @@ export function ChatShell({ me, initialConversationId, initialTab = "chats" }: {
   const cursorKey = `kkchat.cursor.${me.accountSub}`;
 
   const active = inbox.find((item) => item.id === activeId) || null;
+  const paneSub = profileSub ?? (active?.kind === "DIRECT" ? active.peer?.accountSub ?? null : null);
+  const paneSubRef = useRef(paneSub);
+  const shownRelationship = relationship && paneSub && relationship.peer.accountSub === paneSub ? relationship : null;
 
   useEffect(() => {
     activeRef.current = activeId;
   }, [activeId]);
+
+  useEffect(() => {
+    paneSubRef.current = paneSub;
+  }, [paneSub]);
 
   const flash = useCallback((text: string) => {
     setToast(text);
@@ -88,8 +95,8 @@ export function ChatShell({ me, initialConversationId, initialTab = "chats" }: {
     setInbox((prev) => sortInbox(prev.some((item) => item.id === id) ? prev.map((item) => (item.id === id ? data.conversation : item)) : [data.conversation, ...prev]));
     const last = data.messages.at(-1);
     if (last && document.visibilityState === "visible") {
-      const read = await api.markRead(id, last.seq);
-      setInbox((prev) => prev.map((item) => (item.id === id ? { ...item, unreadCount: read.unreadCount, lastReadSeq: read.lastReadSeq } : item)));
+      const read = await api.markRead(id, last.seq).catch(() => null);
+      if (read) setInbox((prev) => prev.map((item) => (item.id === id ? { ...item, unreadCount: read.unreadCount, lastReadSeq: read.lastReadSeq } : item)));
     }
   }, []);
 
@@ -148,10 +155,7 @@ export function ChatShell({ me, initialConversationId, initialTab = "chats" }: {
       if (kind === "friend" || kind === "request" || kind === "block") {
         void loadContacts();
         void loadInbox();
-        setProfileSub((current) => {
-          if (current) void loadRelationship(current).catch(() => undefined);
-          return current;
-        });
+        if (paneSubRef.current) void loadRelationship(paneSubRef.current).catch(() => undefined);
       }
     },
     [loadContacts, loadInbox, loadRelationship, loadThread, me.accountSub],
@@ -201,10 +205,10 @@ export function ChatShell({ me, initialConversationId, initialTab = "chats" }: {
   }, [activeId, loadThread]);
 
   useEffect(() => {
-    if (!profileSub) return;
-    // 打开资料时拉关系状态。
-    void loadRelationship(profileSub).catch((error) => flash(describe(error)));
-  }, [describe, flash, loadRelationship, profileSub]);
+    if (!paneSub) return;
+    // 资料栏显示的人一变就拉关系状态；桌面宽屏时默认是当前单聊对象。
+    void loadRelationship(paneSub).catch((error) => flash(describe(error)));
+  }, [describe, flash, loadRelationship, paneSub]);
 
   useEffect(() => {
     const tabContext = (window as Window & { __yydsTabContext?: () => string }).__yydsTabContext?.() || "";
@@ -280,6 +284,7 @@ export function ChatShell({ me, initialConversationId, initialTab = "chats" }: {
     setTab("chats");
     setActiveId(id);
     setShowProfile(false);
+    setProfileSub(null);
     window.history.replaceState(null, "", `/app/conversations/${id}`);
   }
 
@@ -402,7 +407,7 @@ export function ChatShell({ me, initialConversationId, initialTab = "chats" }: {
       await fn();
       after?.();
       await Promise.all([loadContacts(), loadInbox()]);
-      if (profileSub) await loadRelationship(profileSub);
+      if (paneSub) await loadRelationship(paneSub);
     } catch (error) {
       flash(describe(error));
     }
@@ -674,27 +679,29 @@ export function ChatShell({ me, initialConversationId, initialTab = "chats" }: {
           <b>{t("profile")}</b>
         </div>
         <div className="profile">
-          {profileSub && relationship ? (
+          {shownRelationship ? (
             <ProfileCard
-              key={relationship.peer.accountSub}
-              relationship={relationship}
-              onMessage={() => void startChat(relationship.peer.accountSub)}
+              key={shownRelationship.peer.accountSub}
+              relationship={shownRelationship}
+              onMessage={() => void startChat(shownRelationship.peer.accountSub)}
               onRequest={(message) =>
-                void act(() => api.sendRequest({ addresseeSub: relationship.peer.accountSub, message, source: "profile", clientRequestId: newClientId() }))
+                void act(() => api.sendRequest({ addresseeSub: shownRelationship.peer.accountSub, message, source: "profile", clientRequestId: newClientId() }))
               }
-              onAccept={() => relationship.incoming && void act(() => api.respond(relationship.incoming!.id, "accept"))}
-              onReject={() => relationship.incoming && void act(() => api.respond(relationship.incoming!.id, "reject"))}
-              onWithdraw={() => relationship.outgoing && void act(() => api.respond(relationship.outgoing!.id, "cancel"))}
-              onRemark={(remark) => void act(() => api.setRemark(relationship.peer.accountSub, remark))}
+              onAccept={() => shownRelationship.incoming && void act(() => api.respond(shownRelationship.incoming!.id, "accept"))}
+              onReject={() => shownRelationship.incoming && void act(() => api.respond(shownRelationship.incoming!.id, "reject"))}
+              onWithdraw={() => shownRelationship.outgoing && void act(() => api.respond(shownRelationship.outgoing!.id, "cancel"))}
+              onRemark={(remark) => void act(() => api.setRemark(shownRelationship.peer.accountSub, remark))}
               onDelete={() => {
-                if (window.confirm(t("deleteFriendConfirm"))) void act(() => api.removeFriend(relationship.peer.accountSub));
+                if (window.confirm(t("deleteFriendConfirm"))) void act(() => api.removeFriend(shownRelationship.peer.accountSub));
               }}
               onBlock={() => {
-                if (window.confirm(t("blockConfirm"))) void act(() => api.block(relationship.peer.accountSub));
+                if (window.confirm(t("blockConfirm"))) void act(() => api.block(shownRelationship.peer.accountSub));
               }}
-              onUnblock={() => void act(() => api.unblock(relationship.peer.accountSub))}
-              onReport={() => setReportTarget({ targetSub: relationship.peer.accountSub, name: relationship.peer.displayName, conversationId: relationship.conversationId || undefined })}
+              onUnblock={() => void act(() => api.unblock(shownRelationship.peer.accountSub))}
+              onReport={() => setReportTarget({ targetSub: shownRelationship.peer.accountSub, name: shownRelationship.peer.displayName, conversationId: shownRelationship.conversationId || undefined })}
             />
+          ) : paneSub ? (
+            <p className="muted">{t("loading")}</p>
           ) : active && active.kind !== "DIRECT" ? (
             <>
               <b>{active.title}</b>
@@ -711,7 +718,7 @@ export function ChatShell({ me, initialConversationId, initialTab = "chats" }: {
               ))}
             </>
           ) : (
-            <p className="muted">{t("loading")}</p>
+            <p className="muted">{t("profileHint")}</p>
           )}
         </div>
       </aside>
