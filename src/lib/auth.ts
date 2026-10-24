@@ -1,4 +1,5 @@
 import { getNativeAuthService } from "./app-service";
+import { prisma } from "./db";
 import { ChatError } from "./domain";
 import { assertMutation } from "./http";
 import { readSession } from "./session";
@@ -34,10 +35,17 @@ export async function requireActor(request: Request, options: { mutation?: boole
   return { accountSub: session.accountSub, kind: "web", sessionId: session.id };
 }
 
+/**
+ * 已建立的实时连接按会话本身是否仍有效来判断，而不是看连接时那张 15 分钟凭证是否过期：
+ * 设备会话被撤销（退出、账号中心撤销、刷新重放）才断开。
+ */
 export async function actorStillValid(request: Request, actor: RequestActor): Promise<boolean> {
   if (actor.kind === "native") {
-    const session = await getNativeAuthService().verifyAccess(bearer(request));
-    return Boolean(session && session.id === actor.sessionId);
+    const session = await prisma.deviceSession.findUnique({
+      where: { id: actor.sessionId },
+      select: { revokedAt: true, expiresAt: true },
+    });
+    return Boolean(session && !session.revokedAt && session.expiresAt.getTime() > Date.now());
   }
   const current = await readSession(request);
   return Boolean(current && current.id === actor.sessionId);

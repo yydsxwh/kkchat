@@ -5,7 +5,8 @@ import nextTs from "eslint-config-next/typescript";
 const eslintConfig = defineConfig([
   ...nextVitals,
   ...nextTs,
-  globalIgnores([".next/**", "out/**", "build/**", "next-env.d.ts"]),
+  // apps/mobile 是独立的 React Native 工程，有自己的 tsconfig 与检查命令。
+  globalIgnores([".next/**", "out/**", "build/**", "next-env.d.ts", "apps/**"]),
 ]);
 
 export default eslintConfig;
