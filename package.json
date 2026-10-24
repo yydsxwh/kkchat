@@ -9,7 +9,7 @@
     "start": "next start --hostname 127.0.0.1 --port 3210",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "DATABASE_URL=postgresql://kkchat:kkchat@127.0.0.1:5432/kkchat node --import tsx --test \"test/**/*.test.ts\"",
+    "test": "node scripts/test-db-reset.mjs && node --import tsx --test --test-concurrency=1 \"test/**/*.test.ts\"",
     "db:migrate": "prisma migrate deploy",
     "postinstall": "prisma generate"
   },

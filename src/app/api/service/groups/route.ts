@@ -28,6 +28,7 @@ const schema = z.object({
     .optional(),
 });
 
+/** 课程群。profiles 只作账号中心暂不可达时的占位昵称，不覆盖账号中心资料。 */
 export async function POST(request: Request) {
   try {
     const { product } = authorizeService(request);
@@ -35,28 +36,18 @@ export async function POST(request: Request) {
     if (!isUserPublicId(body.creatorSub) || body.memberSubs.some((item) => !isUserPublicId(item))) {
       return json({ error: "账号标识无效" }, 400);
     }
-    const service = getChatService();
-    const now = new Date();
+    const hints = new Map<string, string>();
     for (const profile of body.profiles || []) {
-      if (!isUserPublicId(profile.accountSub)) continue;
-      await service.upsertProjection({
-        accountSub: profile.accountSub,
-        displayName: profile.displayName || "用户",
-        kkNumber: profile.kkNumber ?? null,
-        username: profile.username ?? null,
-        avatarUrl: profile.avatarUrl || "",
-        publicRole: null,
-        profileUpdatedAt: now,
-      });
+      if (isUserPublicId(profile.accountSub) && profile.displayName) hints.set(profile.accountSub, profile.displayName);
     }
-    const conversation = await service.ensureBusinessGroup({
+    const conversation = await getChatService().ensureBusinessGroup({
       creatorSub: body.creatorSub,
       title: body.title,
       memberSubs: body.memberSubs,
       sourceProduct: product,
       businessType: body.businessType,
       businessRefId: body.businessRefId,
-      now,
+      hints,
     });
     const href = conversationPath(conversation.id);
     return json({ conversationId: conversation.id, href, url: `${loadConfig().origin}${href}` });

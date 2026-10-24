@@ -5,8 +5,8 @@ import { readCookie } from "@/lib/crypto";
 import { prisma } from "@/lib/db";
 import { safeReturnTo } from "@/lib/domain";
 import { applyAuthCookies, freshCsrf } from "@/lib/http";
-import { assertOidcStart, claimsToProjection, exchangeAuthorizationCode, verifyIdToken } from "@/lib/oidc";
-import { getChatService } from "@/lib/app-service";
+import { assertOidcStart, exchangeAuthorizationCode, verifyIdToken } from "@/lib/oidc";
+import { upsertProjectionFromClaims } from "@/lib/projection";
 import { DEVICE_COOKIE, OIDC_COOKIE, createBrowserSession, linkKkAccount, openOidc } from "@/lib/session";
 import { holdCookieName, multiAccountTabsEnabled } from "@/lib/tab-decision";
 
@@ -42,9 +42,9 @@ export async function GET(request: Request) {
       audience: config.accountClientId,
       nonce: start.nonce,
     });
-    const projection = claimsToProjection(claims);
-    await getChatService().upsertProjection(projection);
-    const session = await createBrowserSession(projection.accountSub);
+    const projection = await upsertProjectionFromClaims(prisma, claims);
+    const sid = typeof (claims as { sid?: unknown }).sid === "string" ? String((claims as { sid?: unknown }).sid) : null;
+    const session = await createBrowserSession(projection.accountSub, new Date(), sid);
     // Safe partial rollout: leave the legacy single-account session untouched
     // while other products have not yet enabled tab-scoped sessions.
     if (!multiAccountTabsEnabled()) {

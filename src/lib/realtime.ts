@@ -1,93 +1,83 @@
 /**
- * 实时层只负责把已落库的事件推给在线连接。
- * 数据库才是事实源；这里丢了，刷新仍能从会话接口读到。
+ * 实时层只负责把已提交的同步事件推给在线连接。
+ * 数据库里的 SyncEvent 才是事实源；这里丢了、进程重启了，客户端按 seq 补拉即可。
  */
 
-export type RealtimeKind = "message" | "read" | "recall";
+export type RealtimeKind =
+  | "message"
+  | "recall"
+  | "read"
+  | "conversation"
+  | "friend"
+  | "request"
+  | "block"
+  | "session";
 
 export type RealtimeEvent = {
+  accountSub: string;
+  seq: number;
   kind: RealtimeKind;
-  conversationId: string;
-  /** 只推给这些成员。调用方必须已经做过成员校验。 */
-  accountSubs: string[];
+  conversationId: string | null;
   data: Record<string, unknown>;
 };
 
 export interface RealtimeBus {
-  publish(event: RealtimeEvent): void;
+  publish(events: RealtimeEvent[]): void;
   subscribe(accountSub: string, listener: (event: RealtimeEvent) => void): () => void;
+  /** 让某个账号的连接立即断开，例如设备会话被撤销。 */
+  disconnect(accountSub: string, sessionId: string): void;
+  onDisconnect(accountSub: string, listener: (sessionId: string) => void): () => void;
 }
 
 type Listener = (event: RealtimeEvent) => void;
+type DisconnectListener = (sessionId: string) => void;
 
 export class MemoryRealtimeBus implements RealtimeBus {
   private readonly listeners = new Map<string, Set<Listener>>();
+  private readonly disconnects = new Map<string, Set<DisconnectListener>>();
 
-  publish(event: RealtimeEvent): void {
-    for (const sub of new Set(event.accountSubs)) {
-      for (const listener of this.listeners.get(sub) || []) {
-        listener(event);
+  publish(events: RealtimeEvent[]): void {
+    for (const event of events) {
+      for (const listener of this.listeners.get(event.accountSub) || []) {
+        try {
+          listener(event);
+        } catch {
+          // 单个连接写失败不影响其他连接。
+        }
       }
     }
   }
 
   subscribe(accountSub: string, listener: Listener): () => void {
-    const set = this.listeners.get(accountSub) || new Set<Listener>();
-    set.add(listener);
-    this.listeners.set(accountSub, set);
-    return () => {
-      set.delete(listener);
-      if (set.size === 0) this.listeners.delete(accountSub);
-    };
+    return add(this.listeners, accountSub, listener);
   }
+
+  disconnect(accountSub: string, sessionId: string): void {
+    for (const listener of this.disconnects.get(accountSub) || []) listener(sessionId);
+  }
+
+  onDisconnect(accountSub: string, listener: DisconnectListener): () => void {
+    return add(this.disconnects, accountSub, listener);
+  }
+}
+
+function add<T>(map: Map<string, Set<T>>, key: string, value: T): () => void {
+  const set = map.get(key) || new Set<T>();
+  set.add(value);
+  map.set(key, set);
+  return () => {
+    set.delete(value);
+    if (set.size === 0) map.delete(key);
+  };
 }
 
 /**
- * Redis adapter 的形状。当前进程仍用 MemoryRealtimeBus 做本机扇出；
- * 接入时由 publish 写频道、由订阅把远端事件交回本机 bus。
- * V1 不强制连接 Redis，避免单机部署依赖一个还没配的地址。
+ * 单实例部署只用进程内总线。多实例时需要共享广播（例如 Redis），
+ * 但仍以 SyncEvent 补拉兜底；在没有实际多实例部署前不启用，避免本机发布 + 回环重复推送。
  */
-export type RedisPubSub = {
-  publish(channel: string, message: string): Promise<void>;
-  subscribe(channel: string, onMessage: (message: string) => void): Promise<() => void>;
-};
-
-export const REALTIME_CHANNEL = "kkchat:events";
-
-export class RedisRealtimeBus implements RealtimeBus {
-  private readonly local = new MemoryRealtimeBus();
-  private started = false;
-
-  constructor(private readonly redis: RedisPubSub) {}
-
-  async start(): Promise<void> {
-    if (this.started) return;
-    this.started = true;
-    await this.redis.subscribe(REALTIME_CHANNEL, (raw) => {
-      try {
-        const event = JSON.parse(raw) as RealtimeEvent;
-        if (!event || !Array.isArray(event.accountSubs)) return;
-        this.local.publish(event);
-      } catch {
-        // 坏消息丢掉，不把解析失败打进业务日志全文。
-      }
-    });
-  }
-
-  publish(event: RealtimeEvent): void {
-    this.local.publish(event);
-    void this.redis.publish(REALTIME_CHANNEL, JSON.stringify(event)).catch(() => {
-      // 发布失败不影响已写入数据库的消息。
-    });
-  }
-
-  subscribe(accountSub: string, listener: (event: RealtimeEvent) => void): () => void {
-    return this.local.subscribe(accountSub, listener);
-  }
-}
-
-const memoryBus = new MemoryRealtimeBus();
+const globalBus = globalThis as unknown as { kkchatRealtimeBus?: MemoryRealtimeBus };
 
 export function getRealtimeBus(): RealtimeBus {
-  return memoryBus;
+  if (!globalBus.kkchatRealtimeBus) globalBus.kkchatRealtimeBus = new MemoryRealtimeBus();
+  return globalBus.kkchatRealtimeBus;
 }

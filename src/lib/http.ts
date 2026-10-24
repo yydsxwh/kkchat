@@ -9,11 +9,36 @@ export function json(data: unknown, status = 200) {
   return NextResponse.json(data, { status });
 }
 
+/** 机器可读的错误码（App 据此决定刷新、重新授权还是提示），对应给人看的中文说明。 */
+const CODE_MESSAGES: Record<string, string> = {
+  reauth_required: "需要重新登录账号中心",
+  refresh_invalid: "登录已失效，请重新登录",
+  refresh_expired: "登录已过期，请重新登录",
+  refresh_reused: "登录已失效，请重新登录",
+  session_revoked: "登录已在别处退出，请重新登录",
+};
+
 export function errorResponse(error: unknown) {
-  if (error instanceof ChatError) return json({ error: error.message }, error.status);
+  if (error instanceof ChatError) {
+    const code = /^[a-z_]+(:[a-z_]+)?$/.test(error.message) ? error.message : undefined;
+    if (code) {
+      const base = code.split(":")[0];
+      const message = CODE_MESSAGES[base] || (base === "restart_auth" ? "登录没有完成，请重新登录" : "请求失败");
+      return json({ error: message, code }, error.status);
+    }
+    return json({ error: error.message }, error.status);
+  }
   if (error instanceof OidcError) return json({ error: "登录校验失败" }, 400);
   if (error instanceof Error && error.name === "ZodError") return json({ error: "请求格式不正确" }, 400);
+  if (error instanceof SyntaxError) return json({ error: "请求格式不正确" }, 400);
+  const name = error instanceof Error ? error.name : "unknown";
+  const message = error instanceof Error ? error.message.slice(0, 300) : "";
+  console.error(`[kkchat] unexpected ${name}: ${message}`);
   return json({ error: "暂时无法完成操作" }, 500);
+}
+
+export function clientIp(request: Request) {
+  return (request.headers.get("x-real-ip") || request.headers.get("x-forwarded-for")?.split(",")[0] || "local").trim().slice(0, 64);
 }
 
 export async function requireUser(request: Request): Promise<SessionRecord> {

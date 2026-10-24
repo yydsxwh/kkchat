@@ -27,11 +27,12 @@ export function cookieBase(config: KkchatConfig) {
   };
 }
 
-export async function createBrowserSession(accountSub: string, now = new Date()): Promise<SessionRecord> {
+/** accountSid 是账号中心会话。账号中心撤销它时，后台巡检会让这个网页会话一起失效。 */
+export async function createBrowserSession(accountSub: string, now = new Date(), accountSid: string | null = null): Promise<SessionRecord> {
   const id = randomToken(32);
   const expiresAt = new Date(now.getTime() + SESSION_TTL_MS);
   await prisma.browserSession.create({
-    data: { id, accountSub, expiresAt },
+    data: { id, accountSub, expiresAt, accountSid: accountSid || null },
   });
   return { id, accountSub, expiresAt };
 }
