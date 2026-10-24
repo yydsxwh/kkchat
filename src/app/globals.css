@@ -303,12 +303,12 @@ button { cursor: pointer; }
 .contacts h3, .me h3 { font-size: 13px; color: var(--muted); margin: 16px 8px 6px; font-weight: 600; }
 .row-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 4px 0; }
 .search.flush { margin: 0 0 8px; }
-.req { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 4px; border-bottom: 1px solid var(--line); }
-.req-who { display: flex; align-items: center; gap: 10px; min-width: 0; border: 0; background: transparent; text-align: left; padding: 4px; }
+.req { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 8px; padding: 6px 4px; border-bottom: 1px solid var(--line); }
+.req-who { flex: 1 1 180px; display: flex; align-items: center; gap: 10px; min-width: 0; border: 0; background: transparent; text-align: left; padding: 4px; }
 .req-who span { min-width: 0; }
-.req-who b { display: block; }
+.req-who b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .req-who small { color: var(--muted); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
-.req-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.req-actions { display: flex; gap: 6px; flex-shrink: 0; margin-left: auto; }
 .req-actions .btn { min-height: 36px; padding: 0 12px; }
 .thread-title { flex: 1; min-width: 0; }
 .thread-title b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
