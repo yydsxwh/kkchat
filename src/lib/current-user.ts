@@ -1,6 +1,6 @@
-import { cookies } from "next/headers";
+import { headers } from "next/headers";
 import { prisma } from "./db";
-import { SESSION_COOKIE } from "./session";
+import { readSession } from "./session";
 
 export type CurrentUser = {
   accountSub: string;
@@ -11,13 +11,18 @@ export type CurrentUser = {
   publicRole: string | null;
 };
 
+/** SSR must use the same server-side tab/device decision as API routes.
+ * Never read the legacy shared cookie directly when a device exists. */
 export async function currentUser(): Promise<CurrentUser | null> {
   try {
-    const jar = await cookies();
-    const id = jar.get(SESSION_COOKIE)?.value;
-    if (!id) return null;
-    const session = await prisma.browserSession.findUnique({ where: { id } });
-    if (!session || session.revokedAt || session.expiresAt.getTime() <= Date.now()) return null;
+    const incoming = await headers();
+    const cookie = incoming.get("cookie") || "";
+    const tab = incoming.get("x-yyds-tab") || "";
+    const request = new Request("https://kkchat.invalid/internal/session", {
+      headers: { cookie, "x-yyds-tab": tab },
+    });
+    const session = await readSession(request);
+    if (!session) return null;
     const user = await prisma.userProjection.findUnique({ where: { accountSub: session.accountSub } });
     if (!user) return null;
     return {

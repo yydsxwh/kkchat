@@ -117,3 +117,45 @@ model MessageRead {
 
   @@unique([messageId, accountSub])
 }
+
+model KkDevice {
+  id           String   @id @default(cuid())
+  tokenHash    String   @unique
+  explicitPick Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  revokedAt    DateTime?
+  accounts     KkDeviceAccount[]
+  tabs         KkTab[]
+}
+
+model KkDeviceAccount {
+  id         String    @id @default(cuid())
+  deviceId   String
+  sessionId  String
+  accountSub String
+  createdAt  DateTime  @default(now())
+  revokedAt  DateTime?
+  device     KkDevice  @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([deviceId, accountSub])
+}
+
+model KkTab {
+  id        String    @id
+  deviceId  String
+  sessionId String    @default("")
+  createdAt DateTime  @default(now())
+  revokedAt DateTime?
+  device    KkDevice  @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId])
+}
+
+model KkOidcAttempt {
+  id           String   @id @default(cuid())
+  stateHash    String   @unique
+  sealed       String
+  tabContextId String   @default("")
+  expiresAt    DateTime
+  consumedAt   DateTime?
+}
