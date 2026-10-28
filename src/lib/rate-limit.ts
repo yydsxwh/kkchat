@@ -10,6 +10,11 @@ export function createRateLimiter(limit: number, windowMs: number) {
       }
       fresh.push(now);
       hits.set(key, fresh);
+      if (hits.size > 10_000) {
+        for (const [entry, times] of hits) {
+          if (times.every((at) => now - at >= windowMs)) hits.delete(entry);
+        }
+      }
       return true;
     },
   };
@@ -18,3 +23,8 @@ export function createRateLimiter(limit: number, windowMs: number) {
 export const sendLimiter = createRateLimiter(30, 60_000);
 export const searchLimiter = createRateLimiter(20, 60_000);
 export const serviceLimiter = createRateLimiter(120, 60_000);
+export const friendLimiter = createRateLimiter(30, 60_000);
+export const uploadLimiter = createRateLimiter(20, 60_000);
+export const nativeAuthLimiter = createRateLimiter(20, 60_000);
+export const refreshLimiter = createRateLimiter(30, 60_000);
+export const inviteLimiter = createRateLimiter(30, 60_000);

@@ -1,0 +1,25 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.kkchatnative'
+version = '1.0.0'
+
+android {
+  namespace "expo.modules.kkchatnative"
+  defaultConfig {
+    versionCode 1
+    versionName "1.0.0"
+  }
+  lintOptions {
+    abortOnError false
+  }
+}
+
+dependencies {
+  // 双屏 / 折叠屏窗口信息（FoldingFeature）。Surface Duo 的铰链也通过它上报。
+  implementation "androidx.window:window:1.5.1"
+  implementation "androidx.window:window-java:1.5.1"
+  implementation "androidx.core:core-ktx:1.13.1"
+}

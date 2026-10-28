@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { getChatService } from "@/lib/app-service";
-import { assertMutation, errorResponse, json, requireUser } from "@/lib/http";
+import { requireActor } from "@/lib/auth";
+import { conversationPath } from "@/lib/chat-service";
+import { errorResponse, json } from "@/lib/http";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -10,18 +12,17 @@ const schema = z.object({
   memberSubs: z.array(z.string()).max(50),
 });
 
+/** 普通用户建群只能拉自己的好友。 */
 export async function POST(request: Request) {
   try {
-    assertMutation(request);
-    const session = await requireUser(request);
+    const actor = await requireActor(request, { mutation: true });
     const body = schema.parse(await request.json());
     const conversation = await getChatService().createGroup({
-      creatorSub: session.accountSub,
+      creatorSub: actor.accountSub,
       title: body.title,
       memberSubs: body.memberSubs,
-      sourceProduct: "kkchat",
     });
-    return json({ conversationId: conversation.id, href: `/app/conversations/${conversation.id}` });
+    return json({ conversationId: conversation.id, href: conversationPath(conversation.id) });
   } catch (error) {
     return errorResponse(error);
   }

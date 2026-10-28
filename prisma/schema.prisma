@@ -16,6 +16,8 @@ model UserProjection {
   displayName      String
   avatarUrl        String   @default("")
   publicRole       String?
+  /// ACCOUNT：来自已验签的 ID token 或账号中心目录。HINT：产品提示或占位，下次会被账号中心覆盖。
+  profileSource    String   @default("HINT")
   profileUpdatedAt DateTime @default(now())
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
@@ -31,6 +33,8 @@ model UserProjection {
 model BrowserSession {
   id         String    @id
   accountSub String
+  /// 账号中心会话 sid。账号中心撤销这个会话时，KKChat 也跟着失效。旧会话为空。
+  accountSid String?
   expiresAt  DateTime
   revokedAt  DateTime?
   createdAt  DateTime  @default(now())
@@ -38,6 +42,7 @@ model BrowserSession {
 
   @@index([accountSub])
   @@index([expiresAt])
+  @@index([accountSid])
 }
 
 model Conversation {
@@ -54,6 +59,8 @@ model Conversation {
   businessRefId      String?
   lastMessageAt      DateTime?
   lastMessagePreview String    @default("")
+  /// 会话内消息序号的当前最大值。发消息时在行锁内加一，保证同一会话按提交顺序编号、不跳号。
+  lastMessageSeq     Int       @default(0)
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
@@ -74,6 +81,8 @@ model ConversationMember {
   joinStatus     String    @default("ACTIVE")
   unreadCount    Int       @default(0)
   lastReadAt     DateTime?
+  /// 已读游标：读到的最大消息序号。只增不减，旧的已读请求不会把新消息清零。
+  lastReadSeq    Int       @default(0)
   /// 这一轮未读已经发过微信提醒的时间。已读后下一轮可以再发。
   lastExternalNotifiedAt DateTime?
   muted          Boolean   @default(false)
@@ -91,12 +100,15 @@ model ConversationMember {
 model Message {
   id             String    @id
   conversationId String
+  /// 会话内递增序号，分页和已读游标都用它，不用时间戳。
+  seq            Int
   senderSub      String
-  /// TEXT | SYSTEM | ACTION_CARD
+  /// TEXT | IMAGE | FILE | SYSTEM | ACTION_CARD
   type           String    @default("TEXT")
   body           String    @default("")
   metadataJson   String    @default("{}")
   sourceProduct  String    @default("kkchat")
+  /// 客户端 clientMessageId 或服务方幂等键。重试、离线队列重放都用同一个值。
   idempotencyKey String?
   recalledAt     DateTime?
   createdAt      DateTime  @default(now())
@@ -105,6 +117,7 @@ model Message {
   reads        MessageRead[]
 
   @@unique([conversationId, senderSub, idempotencyKey])
+  @@unique([conversationId, seq])
   @@index([conversationId, createdAt])
 }
 
@@ -116,4 +129,314 @@ model MessageRead {
   message    Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
 
   @@unique([messageId, accountSub])
+}
+
+model KkDevice {
+  id           String   @id @default(cuid())
+  tokenHash    String   @unique
+  explicitPick Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  revokedAt    DateTime?
+  accounts     KkDeviceAccount[]
+  tabs         KkTab[]
+}
+
+model KkDeviceAccount {
+  id         String    @id @default(cuid())
+  deviceId   String
+  sessionId  String
+  accountSub String
+  createdAt  DateTime  @default(now())
+  revokedAt  DateTime?
+  device     KkDevice  @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([deviceId, accountSub])
+}
+
+model KkTab {
+  id        String    @id
+  deviceId  String
+  sessionId String    @default("")
+  createdAt DateTime  @default(now())
+  revokedAt DateTime?
+  device    KkDevice  @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([deviceId])
+}
+
+model KkOidcAttempt {
+  id           String   @id @default(cuid())
+  stateHash    String   @unique
+  sealed       String
+  tabContextId String   @default("")
+  expiresAt    DateTime
+  consumedAt   DateTime?
+}
+
+/// 好友申请。pairKey 是两个 sub 排序后拼成的键，与谁先发起无关。
+model FriendRequest {
+  id              String    @id
+  pairKey         String
+  requesterSub    String
+  addresseeSub    String
+  /// PENDING | ACCEPTED | REJECTED | CANCELLED | EXPIRED | INVALIDATED
+  status          String
+  /// 仅 PENDING 时等于 pairKey，其余为 NULL。唯一约束保证一对用户最多一个未决申请。
+  pendingPairKey  String?   @unique
+  message         String    @default("")
+  /// search | qr | link | profile
+  source          String    @default("search")
+  /// 发起方生成的请求 ID。重试同一个请求不会生成第二份申请。
+  clientRequestId String?
+  version         Int       @default(1)
+  expiresAt       DateTime
+  respondedAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([requesterSub, clientRequestId])
+  @@index([addresseeSub, status])
+  @@index([requesterSub, status])
+  @@index([pairKey, createdAt])
+}
+
+/// 一对用户共享的一条好友关系。状态只由服务端事务改，不由两端各写一半。
+model Friendship {
+  pairKey        String    @id
+  subA           String
+  subB           String
+  /// ACTIVE | REMOVED
+  status         String
+  version        Int       @default(1)
+  establishedAt  DateTime
+  removedAt      DateTime?
+  removedBySub   String?
+  /// 建立当前这段关系的申请
+  requestId      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([subA, status])
+  @@index([subB, status])
+}
+
+/// 每个人对联系人的私有备注。不会覆盖对方公开资料。
+model ContactNote {
+  id        String   @id
+  ownerSub  String
+  targetSub String
+  remark    String   @default("")
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  @@unique([ownerSub, targetSub])
+}
+
+/// 有方向的拉黑。与好友状态分开表达。
+model UserBlock {
+  id         String   @id
+  blockerSub String
+  blockedSub String
+  createdAt  DateTime @default(now())
+
+  @@unique([blockerSub, blockedSub])
+  @@index([blockedSub])
+}
+
+/// 不是好友也能继续个人私聊的授权：升级前已有的私聊（LEGACY），或经产品服务凭证建立的业务沟通（BUSINESS）。
+/// 删除好友或拉黑时撤销。普通用户接口不能创建这类授权。
+model DirectGrant {
+  id            String    @id
+  pairKey       String
+  /// LEGACY | BUSINESS
+  kind          String
+  sourceProduct String
+  businessType  String?
+  businessRefId String?
+  createdAt     DateTime  @default(now())
+  revokedAt     DateTime?
+  revokedReason String?
+
+  @@index([pairKey, revokedAt])
+}
+
+/// 举报。消息正文在提交时留快照，撤回后审核人仍能看到被举报内容。
+model UserReport {
+  id             String    @id
+  reporterSub    String
+  targetSub      String
+  conversationId String?
+  messageId      String?
+  /// spam | harassment | fraud | illegal | other
+  reason         String
+  detail         String    @default("")
+  messageSnapshot String   @default("")
+  /// OPEN | RESOLVED | DISMISSED
+  status         String    @default("OPEN")
+  resolution     String    @default("")
+  handledBySub   String?
+  handledAt      DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@index([status, createdAt])
+  @@index([reporterSub, createdAt])
+}
+
+/// 可发现性与通知隐私。没有记录时按默认值处理。
+model PrivacySetting {
+  accountSub              String   @id
+  discoverByKkNumber      Boolean  @default(true)
+  discoverByUsername      Boolean  @default(true)
+  discoverByName          Boolean  @default(true)
+  allowFriendRequests     Boolean  @default(true)
+  hideNotificationContent Boolean  @default(false)
+  updatedAt               DateTime @updatedAt
+}
+
+/// 个人二维码与邀请链接。只存摘要，可撤销、会过期；本身不授予任何聊天权限。
+model InviteLink {
+  id        String    @id
+  tokenHash String    @unique
+  ownerSub  String
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([ownerSub, createdAt])
+}
+
+/// 每个账号的同步序号。写事件时在行锁内加一，保证同一账号的事件按提交顺序编号。
+model UserSyncState {
+  accountSub String   @id
+  lastSeq    Int      @default(0)
+  updatedAt  DateTime @updatedAt
+}
+
+/// 持久化的同步事件。服务重启、SSE 丢事件、断网后都靠它补拉。
+model SyncEvent {
+  accountSub     String
+  seq            Int
+  /// message | recall | read | conversation | friend | request | block | session
+  kind           String
+  conversationId String?
+  payloadJson    String
+  createdAt      DateTime @default(now())
+
+  @@id([accountSub, seq])
+  @@index([createdAt])
+}
+
+/// 原生 App 登录事务。一次授权只能换出一个设备会话。
+model NativeLoginTransaction {
+  id                String    @id
+  secretHash        String
+  /// android | ios
+  platform          String
+  clientId          String
+  redirectUri       String
+  state             String    @unique
+  nonce             String
+  codeChallenge     String
+  /// PENDING | EXCHANGING | COMPLETED | FAILED
+  status            String    @default("PENDING")
+  failureCode       String?
+  deviceName        String    @default("")
+  deviceSessionId   String?   @unique
+  /// 已完成结果的短期恢复副本，AES-GCM 加密。只有同时持有事务密钥和 PKCE verifier 才能取回。
+  resultSealed      String?
+  resultExpiresAt   DateTime?
+  exchangeStartedAt DateTime?
+  expiresAt         DateTime
+  completedAt       DateTime?
+  createdAt         DateTime  @default(now())
+
+  @@index([expiresAt])
+}
+
+/// 原生 App 的设备会话。身份是 accountSub，设备 ID 不是身份。
+model DeviceSession {
+  id              String    @id
+  accountSub      String
+  /// android | ios
+  platform        String
+  clientId        String
+  /// 账号中心会话 sid。撤销、全局退出时，KKChat 设备会话跟着失效。
+  accountSid      String
+  deviceName      String    @default("")
+  appVersion      String    @default("")
+  expiresAt       DateTime
+  revokedAt       DateTime?
+  revokeReason    String?
+  /// 最近一次向账号中心确认 sid 仍有效的时间。
+  sourceCheckedAt DateTime  @default(now())
+  lastSeenAt      DateTime  @default(now())
+  createdAt       DateTime  @default(now())
+
+  refreshTokens DeviceRefreshToken[]
+  pushDevices   PushDevice[]
+
+  @@index([accountSub])
+  @@index([accountSid])
+  @@index([revokedAt, lastSeenAt])
+}
+
+/// 刷新凭证只存摘要，单次使用。同一请求 ID 的网络重试拿回同一结果，其余重放视为泄露，只撤销这一台设备。
+model DeviceRefreshToken {
+  id                String    @id
+  sessionId         String
+  tokenHash         String    @unique
+  expiresAt         DateTime
+  usedAt            DateTime?
+  usedRequestId     String?
+  replacementSealed String?
+  retryUntil        DateTime?
+  createdAt         DateTime  @default(now())
+
+  session DeviceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+}
+
+/// 系统推送令牌，绑定到有效设备会话。退出、切号、失效时撤销。
+model PushDevice {
+  id          String    @id
+  sessionId   String
+  accountSub  String
+  /// APNS | FCM
+  provider    String
+  token       String
+  /// APNs: sandbox | production
+  environment String    @default("production")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  revokedAt   DateTime?
+
+  session DeviceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, token])
+  @@index([accountSub, revokedAt])
+}
+
+/// 聊天附件。文件放在私有目录，只能经过成员校验的接口读取。
+model Attachment {
+  id             String    @id
+  ownerSub       String
+  conversationId String
+  storageKey     String
+  fileName       String
+  mimeType       String
+  sizeBytes      Int
+  sha256         String
+  width          Int?
+  height         Int?
+  /// UPLOADED | ATTACHED | DELETED
+  status         String    @default("UPLOADED")
+  messageId      String?
+  clientUploadId String?
+  attachedAt     DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@unique([ownerSub, clientUploadId])
+  @@index([conversationId])
+  @@index([status, createdAt])
 }

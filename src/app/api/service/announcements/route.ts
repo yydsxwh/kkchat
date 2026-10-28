@@ -24,32 +24,21 @@ export async function POST(request: Request) {
     const { product } = authorizeService(request);
     const body = schema.parse(await request.json());
     if (!isUserPublicId(body.senderSub)) return json({ error: "账号标识无效" }, 400);
-    const service = getChatService();
-    if (body.senderName?.trim()) {
-      await service.upsertProjection({
-        accountSub: body.senderSub,
-        displayName: body.senderName.trim(),
-        kkNumber: null,
-        username: null,
-        avatarUrl: "",
-        publicRole: null,
-        profileUpdatedAt: new Date(),
-      });
-    }
-    const result = await service.sendMessage({
+    const result = await getChatService().sendMessage({
+      actor: { kind: "service", product },
       senderSub: body.senderSub,
       conversationId: body.conversationId,
       body: body.body,
       type: "TEXT",
-      sourceProduct: product,
       idempotencyKey: body.idempotencyKey,
       metadata: { notice: "course-announcement", courseName: body.courseName },
+      senderHintName: body.senderName,
     });
-    const href = conversationPath(result.conversation.id);
+    const href = conversationPath(result.conversationId);
     const url = `${loadConfig().origin}${href}`;
     const wechatPlanned = result.duplicate ? 0 : await dispatchWechatPlans(result.externalNotifies, url);
     return json({
-      conversationId: result.conversation.id,
+      conversationId: result.conversationId,
       duplicate: result.duplicate,
       href,
       url,

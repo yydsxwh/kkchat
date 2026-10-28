@@ -1,11 +1,14 @@
+import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import { loadConfig, sessionSecretReady } from "@/lib/config";
 import { readCookie } from "@/lib/crypto";
+import { prisma } from "@/lib/db";
 import { safeReturnTo } from "@/lib/domain";
 import { applyAuthCookies, freshCsrf } from "@/lib/http";
-import { assertOidcStart, claimsToProjection, exchangeAuthorizationCode, verifyIdToken } from "@/lib/oidc";
-import { getChatService } from "@/lib/app-service";
-import { OIDC_COOKIE, createBrowserSession, openOidc } from "@/lib/session";
+import { assertOidcStart, exchangeAuthorizationCode, verifyIdToken } from "@/lib/oidc";
+import { upsertProjectionFromClaims } from "@/lib/projection";
+import { DEVICE_COOKIE, OIDC_COOKIE, createBrowserSession, linkKkAccount, openOidc } from "@/lib/session";
+import { holdCookieName, multiAccountTabsEnabled } from "@/lib/tab-decision";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -18,9 +21,19 @@ export async function GET(request: Request) {
   const code = url.searchParams.get("code") || "";
   const state = url.searchParams.get("state") || "";
   if (!code) return fail("missing-code");
-  const start = assertSafe(() =>
-    assertOidcStart(openOidc(readCookie(request.headers.get("cookie"), OIDC_COOKIE), config.sessionSecret), state),
-  );
+  const attempt = state
+    ? await prisma.kkOidcAttempt.findUnique({
+        where: { stateHash: createHash("sha256").update(state).digest("hex") },
+      })
+    : null;
+  const sealed =
+    attempt && !attempt.consumedAt && attempt.expiresAt.getTime() > Date.now()
+      ? attempt.sealed
+      : readCookie(request.headers.get("cookie"), OIDC_COOKIE);
+  if (attempt && !attempt.consumedAt) {
+    await prisma.kkOidcAttempt.update({ where: { id: attempt.id }, data: { consumedAt: new Date() } });
+  }
+  const start = assertSafe(() => assertOidcStart(openOidc(sealed, config.sessionSecret), state));
   if (!start) return fail("state");
   try {
     const tokens = await exchangeAuthorizationCode(config, { code, codeVerifier: start.verifier });
@@ -29,11 +42,35 @@ export async function GET(request: Request) {
       audience: config.accountClientId,
       nonce: start.nonce,
     });
-    const projection = claimsToProjection(claims);
-    await getChatService().upsertProjection(projection);
-    const session = await createBrowserSession(projection.accountSub);
+    const projection = await upsertProjectionFromClaims(prisma, claims);
+    const sid = typeof (claims as { sid?: unknown }).sid === "string" ? String((claims as { sid?: unknown }).sid) : null;
+    const session = await createBrowserSession(projection.accountSub, new Date(), sid);
+    // Safe partial rollout: leave the legacy single-account session untouched
+    // while other products have not yet enabled tab-scoped sessions.
+    if (!multiAccountTabsEnabled()) {
+      const response = NextResponse.redirect(new URL(safeReturnTo(start.returnTo), config.origin));
+      applyAuthCookies(
+        response,
+        { sessionId: session.id, csrf: freshCsrf(), clearOidc: true },
+        config,
+      );
+      return response;
+    }
+    const linked = await linkKkAccount({
+      deviceToken: readCookie(request.headers.get("cookie"), DEVICE_COOKIE),
+      sessionId: session.id,
+      accountSub: projection.accountSub,
+      contextId: attempt?.tabContextId,
+    });
     const response = NextResponse.redirect(new URL(safeReturnTo(start.returnTo), config.origin));
-    applyAuthCookies(response, { sessionId: session.id, csrf: freshCsrf(), clearOidc: true }, config);
+    applyAuthCookies(
+      response,
+      { sessionId: linked.explicit ? undefined : session.id, csrf: freshCsrf(), clearOidc: true },
+      config,
+    );
+    const base = { httpOnly: true, secure: config.cookieSecure, sameSite: "lax" as const, path: "/" };
+    response.cookies.set(DEVICE_COOKIE, linked.deviceToken, { ...base, maxAge: 180 * 24 * 60 * 60 });
+    response.cookies.set(holdCookieName(session.id), session.id, { ...base, maxAge: 30 * 24 * 60 * 60 });
     return response;
   } catch {
     return fail("callback");

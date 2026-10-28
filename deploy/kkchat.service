@@ -7,16 +7,21 @@ Wants=network-online.target
 Type=simple
 User=kkchat
 Group=kkchat
-WorkingDirectory=/opt/kkchat/current
+# 每个版本一个目录：/opt/kkchat/releases/<sha>。切换版本只改这一行（或 drop-in），保留上一版用于回滚。
+WorkingDirectory=/opt/kkchat/releases/CURRENT_SHA
 EnvironmentFile=/etc/kkchat.env
 Environment=NODE_ENV=production
 Environment=PORT=3210
 Environment=HOSTNAME=127.0.0.1
+Environment=KKCHAT_ATTACHMENT_DIR=/var/lib/kkchat/attachments
 ExecStart=/usr/bin/node server.js
 Restart=always
 RestartSec=3
+# 进程收到 SIGTERM 会先断开 SSE、最多再等 8 秒；这里是兜底，别回到默认的 90 秒。
+TimeoutStopSec=20
 NoNewPrivileges=true
 PrivateTmp=true
+ReadWritePaths=/var/lib/kkchat
 
 [Install]
 WantedBy=multi-user.target

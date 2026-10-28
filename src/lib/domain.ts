@@ -9,9 +9,19 @@ export const DIRECTORY_RESULT_LIMIT = 20;
 export const GROUP_MEMBER_LIMIT = 50;
 /** 课程群由服务端同步在读成员，比随便拉的群更大，但仍有上限。 */
 export const COURSE_GROUP_MEMBER_LIMIT = 500;
-export const INBOX_LIMIT = 50;
-export const MESSAGE_PAGE_SIZE = 100;
+export const INBOX_LIMIT = 200;
+export const MESSAGE_PAGE_SIZE = 50;
+export const MESSAGE_PAGE_MAX = 100;
 export const METADATA_MAX_LENGTH = 4000;
+export const FRIEND_REQUEST_MESSAGE_MAX = 120;
+export const FRIEND_REQUEST_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+/** 被拒绝后同一方向冷却一天再申请，避免反复骚扰。 */
+export const FRIEND_REQUEST_REJECT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+export const FRIEND_REQUESTS_PER_DAY = 30;
+export const CONTACT_REMARK_MAX = 40;
+export const REPORT_DETAIL_MAX = 500;
+export const REPORT_REASONS = ["spam", "harassment", "fraud", "illegal", "other"] as const;
+export type ReportReason = (typeof REPORT_REASONS)[number];
 
 /** 与账号中心 public id 一致：usr_ + 26 位 Crockford base32。 */
 const PUBLIC_ID_RE = /^usr_[0-9A-HJKMNP-TV-Z]{26}$/;
@@ -19,8 +29,11 @@ const PUBLIC_ID_RE = /^usr_[0-9A-HJKMNP-TV-Z]{26}$/;
 export const CONVERSATION_KINDS = ["DIRECT", "GROUP", "CHANNEL"] as const;
 export type ConversationKind = (typeof CONVERSATION_KINDS)[number];
 
-export const MESSAGE_TYPES = ["TEXT", "SYSTEM", "ACTION_CARD"] as const;
+export const MESSAGE_TYPES = ["TEXT", "IMAGE", "FILE", "SYSTEM", "ACTION_CARD"] as const;
 export type MessageType = (typeof MESSAGE_TYPES)[number];
+/** 普通用户只能发这些类型。SYSTEM、ACTION_CARD 只接受经产品服务凭证的调用。 */
+export const USER_MESSAGE_TYPES = ["TEXT", "IMAGE", "FILE"] as const satisfies readonly MessageType[];
+export const SERVICE_MESSAGE_TYPES = ["TEXT", "SYSTEM", "ACTION_CARD"] as const satisfies readonly MessageType[];
 
 export class ChatError extends Error {
   constructor(
@@ -57,8 +70,29 @@ export function sanitizeMessageBody(raw: string): string {
   return text;
 }
 
-export function messagePreview(body: string, recalled: boolean): string {
+/** 两个 sub 的规范键。好友、申请、私聊都用这一个键，国家、语言、入口都不参与。 */
+export function buildPairKey(accountSubA: string, accountSubB: string): string {
+  return buildDirectKey(accountSubA, accountSubB);
+}
+
+export function peerFromPairKey(pairKey: string, self: string): string {
+  const parts = pairKey.split("__");
+  if (parts.length !== 2 || !parts.includes(self)) throw new ChatError(400, "账号标识无效");
+  return parts[0] === self ? parts[1] : parts[0];
+}
+
+export function cleanShortText(raw: unknown, max: number): string {
+  return String(raw ?? "")
+    .replace(/\u0000/g, "")
+    .replace(/[\r\n\t]+/g, " ")
+    .trim()
+    .slice(0, max);
+}
+
+export function messagePreview(body: string, recalled: boolean, type: MessageType = "TEXT"): string {
   if (recalled) return "已撤回";
+  if (type === "IMAGE") return "[图片]";
+  if (type === "FILE") return `[文件] ${body.replace(/\s+/g, " ").trim().slice(0, PREVIEW_LENGTH - 5)}`;
   const flat = body.replace(/\s+/g, " ").trim();
   if (flat.length <= PREVIEW_LENGTH) return flat;
   return `${flat.slice(0, PREVIEW_LENGTH)}…`;
@@ -153,18 +187,17 @@ export function isMessageType(value: string): value is MessageType {
   return (MESSAGE_TYPES as readonly string[]).includes(value);
 }
 
-/** 对方已读：任一其他在席成员的 lastReadAt 不早于这条消息。 */
+/** 对方已读：任一其他在席成员的已读游标不小于这条消息的序号。 */
 export function messageReadByPeer(
-  message: { senderSub: string; createdAt: Date; recalledAt: Date | null },
-  members: Array<{ accountSub: string; joinStatus: string; lastReadAt: Date | null }>,
+  message: { senderSub: string; seq: number; recalledAt: Date | null },
+  members: Array<{ accountSub: string; joinStatus: string; lastReadSeq: number }>,
 ): boolean {
   if (message.recalledAt) return false;
   return members.some(
     (member) =>
       member.accountSub !== message.senderSub &&
       member.joinStatus === "ACTIVE" &&
-      member.lastReadAt != null &&
-      member.lastReadAt.getTime() >= message.createdAt.getTime(),
+      member.lastReadSeq >= message.seq,
   );
 }
 

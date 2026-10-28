@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["KkchatNativeModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.kkchatnative.KkchatNativeModule"]
+  }
+}
