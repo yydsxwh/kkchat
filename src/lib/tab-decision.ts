@@ -27,7 +27,7 @@ export function holdCookieName(sessionId: string): string {
   return `${HOLD_COOKIE_PREFIX}${safe}`;
 }
 
-/** 安全开关：仅 MULTI_ACCOUNT_TABS=1 才启用，缺省/0 始终保留旧登录，避免半套升级串号。 */
+/** 安全开关。只有 MULTI_ACCOUNT_TABS=1 才启用。缺省保持旧登录，避免只升级一半时串号。回滚就是拿掉这个变量。 */
 export function multiAccountTabsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.MULTI_ACCOUNT_TABS === "1";
 }
@@ -124,11 +124,18 @@ export function activeAccounts(state: BrokerState): AccountRecord[] {
 
 export function roleFor(account: AccountRecord, selected: string | null | undefined): string | null {
   if (selected && account.grantedRoles.includes(selected)) return selected;
+  // 点过的工作台已经不在授予列表里时，不能退回优先级最高的角色。
+  if (selected) return account.grantedRoles.length === 1 ? account.grantedRoles[0] : null;
   if (account.defaultRole && account.grantedRoles.includes(account.defaultRole)) {
     return account.defaultRole;
   }
   if (account.grantedRoles.length === 1) return account.grantedRoles[0];
   return null;
+}
+
+/** 已经有设备记录时，不准再拿共享会话 Cookie 当这个标签页的身份。 */
+export function legacySessionAllowed(device: "absent" | "active" | "revoked"): boolean {
+  return device === "absent";
 }
 
 export function permissionRoles(account: AccountRecord, selected: string | null | undefined): string[] {
@@ -488,9 +495,16 @@ window.addEventListener("pagehide",function(event){
     if(cur&&cur.instance===instance) localStorage.removeItem(beatKey);
   }catch(e){}
 });
+function sameOrigin(input){
+  try{
+    var raw=typeof input==="string"?input:(input&&input.url)||"";
+    return new URL(raw,location.href).origin===location.origin;
+  }catch(e){return false;}
+}
 var orig=window.fetch;
 if(typeof orig==="function"){
   window.fetch=function(input,init){
+    if(!sameOrigin(input)) return orig.apply(this,arguments);
     var headers=new Headers(init&&init.headers?init.headers:undefined);
     if(!headers.has(HEADER)) headers.set(HEADER,id);
     var next=Object.assign({},init||{},{headers:headers});

@@ -52,10 +52,10 @@ export async function readSession(request: Request, now = new Date()): Promise<S
 }
 
 export async function revokeSession(request: Request) {
-  const id = readCookie(request.headers.get("cookie"), SESSION_COOKIE);
-  if (!id) return;
+  const current = await readSession(request);
+  if (!current) return;
   await prisma.browserSession.updateMany({
-    where: { id, revokedAt: null },
+    where: { id: current.id, revokedAt: null },
     data: { revokedAt: new Date() },
   });
 }
@@ -118,7 +118,8 @@ async function readTabSession(request: Request, now: Date): Promise<SessionRecor
       revoked: false,
     })),
   };
-  const queryTab = new URL(request.url).searchParams.get("tab");
+  const url = new URL(request.url);
+  const queryTab = url.pathname.endsWith("/api/realtime") ? url.searchParams.get("tab") : "";
   const decision = resolveAccess(state, {
     tabHeader: request.headers.get("x-yyds-tab") || queryTab,
   });
@@ -127,6 +128,9 @@ async function readTabSession(request: Request, now: Date): Promise<SessionRecor
   const row = await prisma.browserSession.findUnique({ where: { id: decision.account.sessionId } });
   if (!row || row.revokedAt || row.expiresAt.getTime() <= now.getTime()) return null;
   if (row.accountSub !== decision.account.userId) return null;
+  const hold = readCookie(request.headers.get("cookie"), holdCookieName(row.id));
+  const legacy = readCookie(request.headers.get("cookie"), SESSION_COOKIE);
+  if (hold !== row.id && !(!device.explicitPick && legacy === row.id)) return null;
   return { id: row.id, accountSub: row.accountSub, expiresAt: row.expiresAt };
 }
 
@@ -138,6 +142,15 @@ export async function linkKkAccount(input: { deviceToken?: string; sessionId: st
   if (!device || device.revokedAt) {
     token = randomBytes(32).toString("base64url");
     device = await prisma.kkDevice.create({ data: { tokenHash: deviceHash(token) } });
+  }
+  const previous = await prisma.kkDeviceAccount.findUnique({
+    where: { deviceId_accountSub: { deviceId: device.id, accountSub: input.accountSub } },
+  });
+  if (previous && previous.sessionId !== input.sessionId) {
+    await prisma.browserSession.updateMany({
+      where: { id: previous.sessionId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
   }
   await prisma.kkDeviceAccount.upsert({
     where: { deviceId_accountSub: { deviceId: device.id, accountSub: input.accountSub } },
