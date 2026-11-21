@@ -13,7 +13,8 @@ export const runtime = "nodejs";
 export async function GET(request: Request, context: { params: Promise<{ token: string }> }) {
   try {
     const actor = await requireActor(request);
-    if (!inviteLimiter.allow(`resolve:${clientIp(request)}`)) return json({ error: "操作太频繁" }, 429);
+    const limited = await inviteLimiter.allowShared(`resolve:${clientIp(request)}`);
+    if (!limited.ok) return json({ error: "操作太频繁" }, 429, { "Retry-After": String(limited.retryAfterSec) });
     const { token } = await context.params;
     const invite = await resolveInvite(prisma, token);
     const relationship = await getFriendService().relationship(actor.accountSub, invite.owner.accountSub);
@@ -29,7 +30,8 @@ const schema = z.object({ message: z.string().max(500).optional(), clientRequest
 export async function POST(request: Request, context: { params: Promise<{ token: string }> }) {
   try {
     const actor = await requireActor(request, { mutation: true });
-    if (!friendLimiter.allow(`friend:${actor.accountSub}`)) return json({ error: "操作太频繁" }, 429);
+    const limited = await friendLimiter.allowShared(`friend:${actor.accountSub}`);
+    if (!limited.ok) return json({ error: "操作太频繁" }, 429, { "Retry-After": String(limited.retryAfterSec) });
     const { token } = await context.params;
     const ownerSub = await resolveInviteOwnerSub(prisma, token);
     const input = schema.parse(await request.json());

@@ -11,7 +11,8 @@ export const runtime = "nodejs";
 export async function POST(request: Request) {
   try {
     const actor = await requireActor(request, { mutation: true });
-    if (!inviteLimiter.allow(`invite:${actor.accountSub}`)) return json({ error: "操作太频繁" }, 429);
+    const limited = await inviteLimiter.allowShared(`invite:${actor.accountSub}`);
+    if (!limited.ok) return json({ error: "操作太频繁" }, 429, { "Retry-After": String(limited.retryAfterSec) });
     return json(await createInvite(prisma, actor.accountSub));
   } catch (error) {
     return errorResponse(error);
