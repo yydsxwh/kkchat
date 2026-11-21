@@ -31,7 +31,8 @@ const schema = z.object({
 export async function POST(request: Request) {
   try {
     const { product } = authorizeService(request);
-    if (!serviceLimiter.allow(product)) return json({ error: "调用太频繁" }, 429);
+    const limited = await serviceLimiter.allowShared(product);
+    if (!limited.ok) return json({ error: "调用太频繁" }, 429, { "Retry-After": String(limited.retryAfterSec) });
     const body = schema.parse(await request.json());
     if (!isUserPublicId(body.senderSub)) return json({ error: "账号标识无效" }, 400);
     if (!body.conversationId && !body.recipientSub) return json({ error: "缺少接收方" }, 400);

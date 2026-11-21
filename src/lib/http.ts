@@ -5,8 +5,8 @@ import { tokensMatch, readCookie } from "./crypto";
 import { CSRF_COOKIE, OIDC_COOKIE, SESSION_COOKIE, cookieBase, newCsrfToken, readSession, type SessionRecord } from "./session";
 import { OidcError } from "./oidc";
 
-export function json(data: unknown, status = 200) {
-  return NextResponse.json(data, { status });
+export function json(data: unknown, status = 200, headers?: Record<string, string>) {
+  return NextResponse.json(data, { status, headers });
 }
 
 /** 机器可读的错误码（App 据此决定刷新、重新授权还是提示），对应给人看的中文说明。 */
@@ -38,7 +38,15 @@ export function errorResponse(error: unknown) {
 }
 
 export function clientIp(request: Request) {
-  return (request.headers.get("x-real-ip") || request.headers.get("x-forwarded-for")?.split(",")[0] || "local").trim().slice(0, 64);
+  const hops = Number((process.env.TRUSTED_PROXY_HOPS || "").trim() || "0");
+  if (!Number.isInteger(hops) || hops <= 0) return "untrusted-peer";
+  const forwarded = (request.headers.get("x-forwarded-for") || "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (forwarded.length >= hops) return forwarded[forwarded.length - hops]!.slice(0, 64);
+  const real = (request.headers.get("x-real-ip") || "").trim();
+  return real ? real.slice(0, 64) : "untrusted-peer";
 }
 
 export async function requireUser(request: Request): Promise<SessionRecord> {

@@ -44,7 +44,8 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
     const actor = await requireActor(request, { mutation: true });
-    if (!sendLimiter.allow(actor.accountSub)) return json({ error: "发送太频繁" }, 429);
+    const limited = await sendLimiter.allowShared(actor.accountSub);
+    if (!limited.ok) return json({ error: "发送太频繁" }, 429, { "Retry-After": String(limited.retryAfterSec) });
     const { id } = await context.params;
     const input = schema.parse(await request.json());
     const result = await getChatService().sendMessage({

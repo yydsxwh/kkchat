@@ -11,7 +11,8 @@ export const runtime = "nodejs";
 export async function GET(request: Request) {
   try {
     const actor = await requireActor(request);
-    if (!searchLimiter.allow(`search:${actor.accountSub}`)) return json({ error: "搜索太频繁" }, 429);
+    const limited = await searchLimiter.allowShared(`search:${actor.accountSub}`);
+    if (!limited.ok) return json({ error: "搜索太频繁" }, 429, { "Retry-After": String(limited.retryAfterSec) });
     const url = new URL(request.url);
     const users = await searchUsers(prisma, actor.accountSub, {
       kkNumber: url.searchParams.get("kkNumber"),

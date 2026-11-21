@@ -18,7 +18,8 @@ const schema = z.object({
 /** 一次性登录交换。响应里的凭证只在这一次出现；日志不记录授权码与令牌。 */
 export async function POST(request: Request) {
   try {
-    if (!nativeAuthLimiter.allow(`exchange:${clientIp(request)}`)) return json({ error: "操作太频繁" }, 429);
+    const limited = await nativeAuthLimiter.allowShared(`exchange:${clientIp(request)}`);
+    if (!limited.ok) return json({ error: "操作太频繁" }, 429, { "Retry-After": String(limited.retryAfterSec) });
     const input = schema.parse(await request.json());
     const result = await getNativeAuthService().exchange(input);
     return json(result);

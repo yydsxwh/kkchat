@@ -27,7 +27,8 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const actor = await requireActor(request, { mutation: true });
-    if (!searchLimiter.allow(`direct:${actor.accountSub}`)) return json({ error: "操作太频繁" }, 429);
+    const limited = await searchLimiter.allowShared(`direct:${actor.accountSub}`);
+    if (!limited.ok) return json({ error: "操作太频繁" }, 429, { "Retry-After": String(limited.retryAfterSec) });
     const body = startSchema.parse(await request.json());
     const peer = body.peerSub || body.recipientSub || "";
     const { conversation } = await getChatService().openDirectForUser(actor.accountSub, peer);

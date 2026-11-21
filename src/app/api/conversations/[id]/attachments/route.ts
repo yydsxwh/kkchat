@@ -14,7 +14,8 @@ export const runtime = "nodejs";
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
     const actor = await requireActor(request, { mutation: true });
-    if (!uploadLimiter.allow(actor.accountSub)) return json({ error: "上传太频繁" }, 429);
+    const limited = await uploadLimiter.allowShared(actor.accountSub);
+    if (!limited.ok) return json({ error: "上传太频繁" }, 429, { "Retry-After": String(limited.retryAfterSec) });
     const length = Number(request.headers.get("content-length") || "0");
     if (length > ATTACHMENT_MAX_BYTES + 64 * 1024) return json({ error: "文件不能超过 20MB" }, 413);
     const { id } = await context.params;

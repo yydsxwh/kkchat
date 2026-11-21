@@ -16,7 +16,8 @@ const schema = z.object({
 
 export async function POST(request: Request) {
   try {
-    if (!nativeAuthLimiter.allow(`start:${clientIp(request)}`)) return json({ error: "操作太频繁" }, 429);
+    const limited = await nativeAuthLimiter.allowShared(`start:${clientIp(request)}`);
+    if (!limited.ok) return json({ error: "操作太频繁" }, 429, { "Retry-After": String(limited.retryAfterSec) });
     const input = schema.parse(await request.json());
     return json(await getNativeAuthService().start(input));
   } catch (error) {
